@@ -1,0 +1,249 @@
+@custom-variant dark (&:is(.dark *));
+
+/* ─────────────────────────────────────────────────────────────
+   MetaScope — design tokens
+   Dark, data-dense Facebook Ads analytics. Meta Blue accent.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --font-size: 16px;
+  --background: #0A0C10;
+  --foreground: #D1D5DB;
+  --card: #111318;
+  --card-foreground: #D1D5DB;
+  --popover: #16181F;
+  --popover-foreground: #D1D5DB;
+  --primary: #1877F2;
+  --primary-foreground: #FFFFFF;
+  --secondary: #1A1D24;
+  --secondary-foreground: #D1D5DB;
+  --muted: #14171D;
+  --muted-foreground: #6B7280;
+  --accent: #1877F2;
+  --accent-foreground: #FFFFFF;
+  --destructive: #EF4444;
+  --destructive-foreground: #FFFFFF;
+  --border: #1E2128;
+  --input: #1E2128;
+  --input-background: #111318;
+  --switch-background: #2A2E37;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: #1877F2;
+  --chart-1: #1877F2;
+  --chart-2: #22C55E;
+  --chart-3: #EC4899;
+  --chart-4: #F59E0B;
+  --chart-5: #A855F7;
+  --radius: 0.625rem;
+  --sidebar: #0C0E13;
+  --sidebar-foreground: #9AA1AC;
+  --sidebar-primary: #1877F2;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: rgba(24, 119, 242, 0.13);
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #1E2128;
+  --sidebar-ring: #1877F2;
+}
+
+.dark {
+  --background: #0A0C10;
+  --foreground: #D1D5DB;
+  --card: #111318;
+  --card-foreground: #D1D5DB;
+  --popover: #16181F;
+  --popover-foreground: #D1D5DB;
+  --primary: #1877F2;
+  --primary-foreground: #FFFFFF;
+  --secondary: #1A1D24;
+  --secondary-foreground: #D1D5DB;
+  --muted: #14171D;
+  --muted-foreground: #6B7280;
+  --accent: #1877F2;
+  --accent-foreground: #FFFFFF;
+  --destructive: #EF4444;
+  --destructive-foreground: #FFFFFF;
+  --border: #1E2128;
+  --input: #1E2128;
+  --ring: #1877F2;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: #1877F2;
+  --chart-2: #22C55E;
+  --chart-3: #EC4899;
+  --chart-4: #F59E0B;
+  --chart-5: #A855F7;
+  --sidebar: #0C0E13;
+  --sidebar-foreground: #9AA1AC;
+  --sidebar-primary: #1877F2;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: rgba(24, 119, 242, 0.13);
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #1E2128;
+  --sidebar-ring: #1877F2;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: 700;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: 700;
+    line-height: 1.4;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: 600;
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-base);
+    font-weight: 500;
+    line-height: 1.5;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: var(--text-base);
+    font-weight: 500;
+    line-height: 1.5;
+  }
+
+  input {
+    font-size: var(--text-base);
+    font-weight: 400;
+    line-height: 1.5;
+  }
+
+  ::selection { background: #1877F255; }
+}
+
+/* ─── MetaScope global motion & utility classes ─────────────── */
+
+/* scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1E2128; border-radius: 6px; border: 2px solid #0A0C10; }
+::-webkit-scrollbar-thumb:hover { background: #2A2E37; }
+
+/* page transition (slide only — never gate visibility on opacity) */
+.ms-page { animation: msPage 240ms cubic-bezier(.4,0,.2,1); }
+@keyframes msPage { from { transform: translateY(7px); } to { transform: none; } }
+
+/* shimmer */
+.ms-shimmer { background: linear-gradient(100deg, #111318 30%, #181C23 50%, #111318 70%); background-size: 200% 100%; animation: msShimmer 1.4s infinite; }
+@keyframes msShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* nav + interactive hovers */
+.ms-nav:hover { background: #14171D !important; color: #D1D5DB !important; }
+.ms-nav.active:hover { background: #1877F220 !important; }
+.ms-menu-item:hover { background: #1E2128 !important; }
+.ms-convo:hover { background: #14171D !important; }
+.ms-btn:hover { filter: brightness(1.12); }
+.ms-btn-primary:hover { filter: none; background: #1565D8 !important; }
+.ms-icon-btn:hover { background: #14171D !important; color: #D1D5DB !important; }
+.ms-th:hover { color: #D1D5DB !important; }
+.ms-chip:hover { background: #1A1D24 !important; color: #D1D5DB !important; border-color: #2A2E37 !important; }
+.ms-chip-hover { transition: transform .15s; }
+.ms-chip-hover:hover { transform: scale(1.05); }
+.ms-card { transition: border-color .15s; }
+.ms-card:hover { border-color: #2A2E37; }
+.ms-trow:hover { background: #1877F208 !important; }
+select.ms-select option { background: #16181F; }
+
+/* message entrance */
+.ms-msg { animation: msMsg 280ms ease; }
+@keyframes msMsg { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* typing dots */
+.ms-dot { animation: msDot 1s infinite ease-in-out; }
+@keyframes msDot { 0%, 60%, 100% { opacity: .25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+
+/* mini bar grow */
+.ms-grow { animation: msGrow .7s cubic-bezier(.4,0,.2,1); transform-origin: left; }
+@keyframes msGrow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+/* loading overlay — frosted backdrop + centered card, shown when data is slow */
+.ms-overlay { animation: msOverlay 180ms ease; }
+@keyframes msOverlay { from { opacity: 0; } to { opacity: 1; } }
+.ms-overlay-card { animation: msOverlayCard 200ms cubic-bezier(.4,0,.2,1); }
+@keyframes msOverlayCard { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+
+/* fade-up entrance for cards / table rows (combine with inline animation-delay
+   for a subtle stagger). Never gate final visibility on it. */
+.ms-fade-up { animation: msFadeUp 320ms cubic-bezier(.4,0,.2,1) both; }
+@keyframes msFadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+textarea::placeholder, input::placeholder { color: #6B7280; }

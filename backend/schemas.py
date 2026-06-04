@@ -1,0 +1,265 @@
+from typing import Any, Literal, Optional, Union
+
+from pydantic import BaseModel, EmailStr, Field
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    full_name: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserPublic(BaseModel):
+    id: str
+    email: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    company: Optional[str] = None
+
+
+class UserUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    company: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserPublic
+
+
+class MetaSettingsRequest(BaseModel):
+    meta_access_token: Optional[str] = None
+    meta_ad_account_id: Optional[str] = None
+    meta_page_id: Optional[str] = None
+    meta_pixel_id: Optional[str] = None
+    preferred_currency: Optional[str] = None
+    timezone: Optional[str] = None
+
+
+class MetaSettingsResponse(BaseModel):
+    meta_access_token_set: bool
+    meta_ad_account_id: Optional[str] = None
+    meta_page_id: Optional[str] = None
+    meta_pixel_id: Optional[str] = None
+    preferred_currency: Optional[str] = None
+    timezone: Optional[str] = None
+
+
+class MetaTestResponse(BaseModel):
+    ok: bool
+    account_name: Optional[str] = None
+    error: Optional[str] = None
+
+
+# ─── Structured agent output ─────────────────────────────────────────────────
+
+
+class AudienceSpec(BaseModel):
+    age_min: int = 18
+    age_max: int = 65
+    countries: list[str] = Field(default_factory=lambda: ["MA"])
+    interests: list[str] = Field(default_factory=list)
+    genders: Optional[str] = None  # "all" | "men" | "women"
+
+
+class AdCopy(BaseModel):
+    headline: str
+    primary_text: str
+    description: Optional[str] = None
+    cta: str = "LEARN_MORE"
+
+
+class CampaignBrief(BaseModel):
+    kind: Literal["campaign_brief"] = "campaign_brief"
+    name: str
+    objective: str
+    daily_budget_usd: float
+    audience: AudienceSpec
+    ad_copy: AdCopy
+    link: Optional[str] = None
+    image_prompt: Optional[str] = None
+    image_hash: Optional[str] = None
+    estimated_reach: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class Metric(BaseModel):
+    label: str
+    value: str
+    trend: Optional[float] = None  # percentage change
+
+
+class InsightAnswer(BaseModel):
+    kind: Literal["insight_answer"] = "insight_answer"
+    summary: str
+    key_metrics: list[Metric] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+
+
+StructuredOutput = Union[CampaignBrief, InsightAnswer]
+
+
+# ─── Chat ────────────────────────────────────────────────────────────────────
+
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+    attached_image_hash: Optional[str] = None
+    attached_image_url: Optional[str] = None
+
+
+class ToolCallInfo(BaseModel):
+    name: str
+    status: str
+    output: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    conversation_id: str
+    reply: str
+    tool_calls: list[ToolCallInfo] = []
+    structured: Optional[StructuredOutput] = None
+
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: Optional[str] = None
+    created_at: str
+    updated_at: Optional[str] = None
+
+
+class MessageOut(BaseModel):
+    id: str
+    role: str
+    content: str
+    created_at: str
+    metadata: dict[str, Any] = {}
+
+
+# ─── Meta data read endpoints ────────────────────────────────────────────────
+
+
+class CampaignSummary(BaseModel):
+    id: str
+    name: str
+    objective: Optional[str] = None
+    status: Optional[str] = None
+    daily_budget: Optional[float] = None
+    impressions: int = 0
+    clicks: int = 0
+    spend: float = 0.0
+    ctr: float = 0.0
+    cpc: float = 0.0
+    conversions: int = 0
+
+
+class DashboardSeriesPoint(BaseModel):
+    date: str
+    impressions: int = 0
+    reach: int = 0
+    spend: float = 0.0
+    clicks: int = 0
+    ctr: float = 0.0
+
+
+class DashboardKpi(BaseModel):
+    label: str
+    value: str
+    change: Optional[float] = None
+    raw: Optional[float] = None
+
+
+class DashboardResponse(BaseModel):
+    days: int
+    kpis: list[DashboardKpi]
+    series: list[DashboardSeriesPoint]
+    age_breakdown: list[dict[str, Any]] = []
+    gender_breakdown: list[dict[str, Any]] = []
+    geo_breakdown: list[dict[str, Any]] = []
+    top_campaigns: list[CampaignSummary] = []
+
+
+class PagePost(BaseModel):
+    id: str
+    message: Optional[str] = None
+    created_time: Optional[str] = None
+    permalink_url: Optional[str] = None
+    full_picture: Optional[str] = None
+    reactions: int = 0
+    comments: int = 0
+    shares: int = 0
+
+
+class PageSummaryResponse(BaseModel):
+    posts_count: int = 0
+    reactions: int = 0
+    comments: int = 0
+    shares: int = 0
+    reach_total: int = 0
+    reach_organic: int = 0
+    reach_paid: int = 0
+    top_posts: list[PagePost] = []
+    posts: list[PagePost] = []
+    engagement_blocked: bool = False
+
+
+class CampaignDetailResponse(BaseModel):
+    adsets: list[dict[str, Any]] = []
+    ads: list[dict[str, Any]] = []
+    demographics: list[dict[str, Any]] = []
+    placements: list[dict[str, Any]] = []
+
+
+class AudienceSummary(BaseModel):
+    id: str
+    name: str
+    type: str
+    size_low: int = 0
+    size_high: int = 0
+    status: str
+    description: Optional[str] = None
+    retention_days: int = 0
+    time_created: Optional[str] = None
+    time_updated: Optional[str] = None
+
+
+class AudienceReachResponse(BaseModel):
+    """The real audience reached/engaged by the account's delivered campaigns."""
+
+    reach_total: int = 0
+    age_breakdown: list[dict[str, Any]] = []
+    gender_breakdown: list[dict[str, Any]] = []
+    demographics: list[dict[str, Any]] = []
+    placements: list[dict[str, Any]] = []
+    geo_breakdown: list[dict[str, Any]] = []
+
+
+class SearchResultItem(BaseModel):
+    kind: str  # "campaign" | "post" | "page"
+    id: str
+    title: str
+    subtitle: Optional[str] = None
+    url: Optional[str] = None
+
+
+class SearchResponse(BaseModel):
+    query: str
+    results: list[SearchResultItem]
+
+
+class ChatImageUploadResponse(BaseModel):
+    image_hash: str
+    preview_url: Optional[str] = None
+    error: Optional[str] = None
