@@ -1,3 +1,5 @@
+import re
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .config import supabase_admin
@@ -48,6 +50,130 @@ def upsert_user_settings(user_id: str, patch: dict) -> dict:
     payload = {"user_id": user_id, **{k: v for k, v in clean.items() if v is not None}}
     res = supabase_admin.table("user_settings").insert(payload).execute()
     return res.data[0]
+
+
+# ─── Meta accounts (multi-clés) ──────────────────────────────────────────────
+# Une ligne `meta_accounts` = une clé API connectée (token + ad account + page +
+# pixel). L'utilisateur peut en connecter plusieurs ; le dashboard en sélectionne
+# une à la fois via `get_meta_account`.
+
+
+def _normalize_account_id(value: Any) -> Optional[str]:
+    """Accepte `1234567890` OU `act_1234567890` et renvoie toujours `act_<digits>`.
+
+    L'utilisateur n'a plus à taper le préfixe `act_` : on l'ajoute ici, et on
+    nettoie tout caractère non numérique. Renvoie None si vide.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.lower().startswith("act_"):
+        s = s[4:]
+    digits = re.sub(r"\D", "", s)
+    return f"act_{digits}" if digits else None
+
+
+def list_meta_accounts(user_id: str) -> list[dict]:
+    res = (
+        supabase_admin.table("meta_accounts")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at")
+        .execute()
+    )
+    return res.data or []
+
+
+def _get_account_row(user_id: str, account_id: str) -> Optional[dict]:
+    """Lookup exact (sans fallback) d'un compte de l'utilisateur."""
+    res = (
+        supabase_admin.table("meta_accounts")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("id", account_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def get_meta_account(user_id: str, account_id: Optional[str] = None) -> Optional[dict]:
+    """Résout LE compte à utiliser : celui demandé, sinon le `is_default`, sinon
+    le premier. Si `account_id` est fourni mais introuvable (ex. compte supprimé),
+    on retombe sur le compte par défaut pour ne pas casser le dashboard."""
+    accounts = list_meta_accounts(user_id)
+    if not accounts:
+        return None
+    if account_id:
+        for a in accounts:
+            if a["id"] == account_id:
+                return a
+    for a in accounts:
+        if a.get("is_default"):
+            return a
+    return accounts[0]
+
+
+def create_meta_account(user_id: str, patch: dict) -> dict:
+    clean = _normalize_settings_patch(patch)
+    if "meta_ad_account_id" in clean:
+        clean["meta_ad_account_id"] = _normalize_account_id(clean["meta_ad_account_id"])
+    existing = list_meta_accounts(user_id)
+    payload = {
+        "user_id": user_id,
+        # Le premier compte connecté devient le compte par défaut.
+        "is_default": not existing,
+        **{k: v for k, v in clean.items() if v is not None},
+    }
+    if not payload.get("label"):
+        payload["label"] = f"Compte {len(existing) + 1}"
+    res = supabase_admin.table("meta_accounts").insert(payload).execute()
+    return res.data[0]
+
+
+def update_meta_account(user_id: str, account_id: str, patch: dict) -> Optional[dict]:
+    clean = _normalize_settings_patch(patch)
+    if "meta_ad_account_id" in clean:
+        clean["meta_ad_account_id"] = _normalize_account_id(clean["meta_ad_account_id"])
+    if not clean:
+        return _get_account_row(user_id, account_id)
+    clean["updated_at"] = datetime.now(timezone.utc).isoformat()
+    res = (
+        supabase_admin.table("meta_accounts")
+        .update(clean)
+        .eq("user_id", user_id)
+        .eq("id", account_id)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def set_default_meta_account(user_id: str, account_id: str) -> Optional[dict]:
+    """Marque un compte comme défaut et démarque les autres (l'index unique
+    partiel `meta_accounts_one_default_per_user` n'autorise qu'un seul défaut)."""
+    supabase_admin.table("meta_accounts").update({"is_default": False}).eq(
+        "user_id", user_id
+    ).execute()
+    res = (
+        supabase_admin.table("meta_accounts")
+        .update({"is_default": True})
+        .eq("user_id", user_id)
+        .eq("id", account_id)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def delete_meta_account(user_id: str, account_id: str) -> None:
+    supabase_admin.table("meta_accounts").delete().eq("user_id", user_id).eq(
+        "id", account_id
+    ).execute()
+    # Si on vient de supprimer le compte par défaut, en promouvoir un autre.
+    remaining = list_meta_accounts(user_id)
+    if remaining and not any(a.get("is_default") for a in remaining):
+        set_default_meta_account(user_id, remaining[0]["id"])
 
 
 def list_conversations(user_id: str) -> list[dict]:
@@ -144,6 +270,128 @@ def log_tool_call(
             "duration_ms": duration_ms,
         }
     ).execute()
+
+
+# ─── Cache analytics Meta (fb_* tables) ──────────────────────────────────────
+# Alimenté par le worker backend/facebook_sync.py, lu par les endpoints dashboard
+# via les fonctions d'agrégation SQL (rpc_fb_*). fb_account_id = meta_accounts.id.
+
+
+def _chunked(rows: list, size: int = 500):
+    for i in range(0, len(rows), size):
+        yield rows[i : i + size]
+
+
+def _upsert_chunked(table: str, rows: list[dict], on_conflict: str) -> None:
+    """Upsert par lots (le backfill 'maximum' peut produire des milliers de
+    lignes — on évite un payload géant et on reste sous les limites PostgREST)."""
+    for batch in _chunked(rows):
+        supabase_admin.table(table).upsert(batch, on_conflict=on_conflict).execute()
+
+
+def upsert_fb_campaigns(rows: list[dict]) -> None:
+    if rows:
+        _upsert_chunked("fb_campaigns", rows, "id")
+
+
+def upsert_fb_adsets(rows: list[dict]) -> None:
+    if rows:
+        _upsert_chunked("fb_adsets", rows, "id")
+
+
+def upsert_fb_ads(rows: list[dict]) -> None:
+    if rows:
+        _upsert_chunked("fb_ads", rows, "id")
+
+
+def upsert_fb_insights(rows: list[dict]) -> None:
+    if rows:
+        _upsert_chunked("fb_insights_daily", rows, "ad_account_id,ad_id,date")
+
+
+def upsert_fb_breakdowns(rows: list[dict]) -> None:
+    if rows:
+        _upsert_chunked(
+            "fb_insights_breakdowns", rows, "ad_account_id,date,breakdown_type,key1,key2"
+        )
+
+
+def get_fb_sync_state(ad_account_id: str) -> Optional[dict]:
+    res = (
+        supabase_admin.table("fb_sync_state")
+        .select("*")
+        .eq("ad_account_id", ad_account_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def set_fb_sync_state(ad_account_id: str, **fields: Any) -> None:
+    payload = {
+        "ad_account_id": ad_account_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **fields,
+    }
+    supabase_admin.table("fb_sync_state").upsert(
+        payload, on_conflict="ad_account_id"
+    ).execute()
+
+
+# ── Wrappers RPC (agrégation SQL) ────────────────────────────────────────────
+
+
+def _rpc(name: str, params: dict) -> list[dict]:
+    res = supabase_admin.rpc(name, params).execute()
+    return res.data or []
+
+
+def rpc_fb_summary(account_id: str, start: str, end: str) -> dict:
+    rows = _rpc("fb_summary", {"p_account": account_id, "p_start": start, "p_end": end})
+    return rows[0] if rows else {}
+
+
+def rpc_fb_campaign_agg(account_id: str, start: str, end: str) -> list[dict]:
+    return _rpc("fb_campaign_agg", {"p_account": account_id, "p_start": start, "p_end": end})
+
+
+def rpc_fb_adset_agg(
+    account_id: str, start: str, end: str, campaign_id: Optional[str] = None
+) -> list[dict]:
+    return _rpc(
+        "fb_adset_agg",
+        {"p_account": account_id, "p_start": start, "p_end": end, "p_campaign": campaign_id},
+    )
+
+
+def rpc_fb_ad_agg(
+    account_id: str,
+    start: str,
+    end: str,
+    campaign_id: Optional[str] = None,
+    adset_id: Optional[str] = None,
+) -> list[dict]:
+    return _rpc(
+        "fb_ad_agg",
+        {
+            "p_account": account_id,
+            "p_start": start,
+            "p_end": end,
+            "p_campaign": campaign_id,
+            "p_adset": adset_id,
+        },
+    )
+
+
+def rpc_fb_timeseries(account_id: str, start: str, end: str) -> list[dict]:
+    return _rpc("fb_timeseries", {"p_account": account_id, "p_start": start, "p_end": end})
+
+
+def rpc_fb_breakdown(account_id: str, start: str, end: str, btype: str) -> list[dict]:
+    return _rpc(
+        "fb_breakdown",
+        {"p_account": account_id, "p_start": start, "p_end": end, "p_type": btype},
+    )
 
 
 def save_campaign_tree(

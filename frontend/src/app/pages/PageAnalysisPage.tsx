@@ -1,0 +1,174 @@
+import { useMemo, useState } from "react";
+import { AlertTriangle, ChevronDown, ExternalLink, Image as ImageIcon, Link2 } from "lucide-react";
+import type { PagePost } from "../lib/api";
+import { fmtNum, fmtDateTimeFull } from "../lib/format";
+import { Card, KPICard, Placeholder, SectionTitle, LoadingOverlay, type Kpi } from "../components/ms/primitives";
+import { ConnectPrompt } from "../components/shared/states";
+import { usePageData } from "../hooks/useMetaData";
+
+type PostSortKey = "date" | "engagement" | "reactions" | "comments" | "shares";
+
+export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => void }) {
+  const { data } = usePageData();
+
+  const [postSort, setPostSort] = useState<{ k: PostSortKey; dir: number }>({ k: "date", dir: -1 });
+  const sortedPosts = useMemo(() => {
+    const list = data?.summary?.posts || [];
+    const eng = (p: PagePost) => p.reactions + p.comments + p.shares;
+    return [...list].sort((a, b) => {
+      let av: number, bv: number;
+      if (postSort.k === "date") { av = a.created_time ? new Date(a.created_time).getTime() : 0; bv = b.created_time ? new Date(b.created_time).getTime() : 0; }
+      else if (postSort.k === "engagement") { av = eng(a); bv = eng(b); }
+      else { av = a[postSort.k]; bv = b[postSort.k]; }
+      return (av - bv) * postSort.dir;
+    });
+  }, [data, postSort]);
+  const clickPostSort = (k: PostSortKey) => setPostSort((s) => (s.k === k ? { k, dir: -s.dir } : { k, dir: -1 }));
+
+  if (!data) return <LoadingOverlay fullPage delay={0} messages={["Chargement de la page Facebook…", "Récupération des posts et de l'engagement…"]} />;
+  if (data.configError) return <ConnectPrompt onGoToSettings={onGoToSettings} message={data.configError} />;
+  const { info, summary, apiError } = data;
+  const engagementBlocked = !!summary?.engagement_blocked;
+  const engCell = (n: number | undefined) => (engagementBlocked ? "—" : fmtNum(n || 0));
+
+  const followers = info?.followers_count || info?.fan_count || 0;
+  const topPosts = summary?.top_posts || [];
+  const kpis: Kpi[] = [
+    { label: "Posts", value: fmtNum(summary?.posts_count || 0) },
+    { label: "Likes", value: engCell(summary?.reactions) },
+    { label: "Comments", value: engCell(summary?.comments) },
+    { label: "Shares", value: engCell(summary?.shares) },
+  ];
+  const reachKpis: Kpi[] = [
+    { label: "Portée totale", value: fmtNum(summary?.reach_total || 0) },
+    { label: "Portée organique", value: fmtNum(summary?.reach_organic || 0) },
+    { label: "Portée payante", value: fmtNum(summary?.reach_paid || 0) },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {(engagementBlocked || (apiError && /#10|pages_read_engagement/i.test(apiError))) ? (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderRadius: 10, background: "#F59E0B12", border: "1px solid #F59E0B30", color: "#FCD9A0", fontSize: 12.5 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1, color: "#F59E0B" }} />
+          <span>
+            Les compteurs d'engagement (likes, commentaires, partages) ne sont pas exposés par l'API Meta pour cette page.
+            Ta permission <b style={{ fontFamily: "JetBrains Mono", color: "#FCD9A0" }}>pages_read_engagement</b> est bien accordée — le blocage vient de la fonctionnalité <b style={{ fontFamily: "JetBrains Mono", color: "#FCD9A0" }}>Page Public Content Access</b>, qui requiert une <b>App Review</b> de ton app Meta (régénérer le token ne suffit pas).
+            Tes posts et l'identité de la page restent affichés ; l'engagement est marqué « — » (indisponible).
+          </span>
+        </div>
+      ) : apiError ? (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderRadius: 10, background: "#F59E0B12", border: "1px solid #F59E0B30", color: "#FCD9A0", fontSize: 12.5 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1, color: "#F59E0B" }} />
+          <span>Certaines données Meta n'ont pas pu être chargées : {apiError}. Le reste de la page reste affiché.</span>
+        </div>
+      ) : null}
+      <div style={{ position: "relative", borderRadius: 14, overflow: "hidden", border: "1px solid #1E2128" }}>
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(120deg, #0d2748, #122b1f 60%, #0A0C10)" }} />
+        <div style={{ position: "absolute", inset: 0, background: "repeating-linear-gradient(60deg, rgba(255,255,255,.015) 0 10px, transparent 10px 20px)" }} />
+        <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 20, padding: 24 }}>
+          <div style={{ width: 84, height: 84, borderRadius: 999, overflow: "hidden", background: "linear-gradient(135deg,#1877F2,#0A57C2)", border: "3px solid #0A0C10", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "DM Sans", fontWeight: 700, fontSize: 30, color: "#fff", flexShrink: 0, boxShadow: "0 8px 30px rgba(0,0,0,.4)" }}>
+            {info?.picture_url ? <img src={info.picture_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (info?.name?.[0] || "P")}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <h2 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 24, color: "#F9FAFB", margin: 0, letterSpacing: "-.01em" }}>{info?.name || "Facebook Page"}</h2>
+              {info?.category && <span style={{ fontSize: 11.5, color: "#1877F2", background: "#1877F215", border: "1px solid #1877F230", borderRadius: 999, padding: "3px 10px" }}>{info.category}</span>}
+            </div>
+            <div style={{ display: "flex", gap: 24, marginTop: 12 }}>
+              <span style={{ fontSize: 13.5, color: "#D1D5DB" }}><b style={{ fontFamily: "DM Sans", color: "#F9FAFB" }}>{fmtNum(followers)}</b> followers</span>
+              {info?.link && <a href={info.link} target="_blank" rel="noreferrer" style={{ fontSize: 13.5, color: "#1877F2", display: "inline-flex", alignItems: "center", gap: 5 }}>View page <ExternalLink size={12} /></a>}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+        {kpis.map((k, i) => <KPICard key={k.label} kpi={k} idx={i} />)}
+      </div>
+
+      <div>
+        <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "#6B7280", marginBottom: 8 }}>Portée (28 derniers jours)</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+          {reachKpis.map((k, i) => <KPICard key={k.label} kpi={k} idx={i} />)}
+        </div>
+      </div>
+
+      <Card>
+        <SectionTitle>{engagementBlocked ? "Posts récents" : "Top 3 posts — meilleur engagement"}</SectionTitle>
+        {topPosts.length === 0 ? (
+          <div style={{ padding: 16, textAlign: "center", color: "#6B7280", fontSize: 13 }}>Aucun post trouvé.</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+            {topPosts.map((p, i) => {
+              const eng = p.reactions + p.comments + p.shares;
+              return (
+                <div key={p.id} className="ms-fade-up" style={{ animationDelay: `${i * 70}ms`, background: "#0E1015", border: "1px solid #1E2128", borderRadius: 10, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+                  <div style={{ position: "relative" }}>
+                    {p.full_picture ? <img src={p.full_picture} alt="" style={{ width: "100%", height: 120, objectFit: "cover" }} /> : <Placeholder height={120} radius={0} />}
+                    <span style={{ position: "absolute", top: 8, left: 8, background: "#1877F2", color: "#fff", fontSize: 11, fontWeight: 700, fontFamily: "JetBrains Mono", borderRadius: 6, padding: "2px 7px" }}>#{i + 1}</span>
+                  </div>
+                  <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
+                    <div style={{ fontSize: 12.5, color: "#D1D5DB", lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{p.message || "(sans texte)"}</div>
+                    <div style={{ marginTop: "auto", display: "flex", justifyContent: "space-between", fontSize: 12, fontFamily: "JetBrains Mono" }}>
+                      <span style={{ color: "#9AA1AC" }}>💙 {engCell(p.reactions)}</span>
+                      <span style={{ color: "#9AA1AC" }}>💬 {engCell(p.comments)}</span>
+                      <span style={{ color: "#9AA1AC" }}>🔁 {engCell(p.shares)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#6B7280", borderTop: "1px solid #1E2128", paddingTop: 8 }}>
+                      {!engagementBlocked && <div>Engagement total : <b style={{ color: "#22C55E", fontFamily: "JetBrains Mono" }}>{fmtNum(eng)}</b></div>}
+                      <div style={{ marginTop: 3 }}>{fmtDateTimeFull(p.created_time)}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      <Card pad={0}>
+        <div style={{ padding: "18px 20px 12px" }}><SectionTitle>Posts Performance</SectionTitle></div>
+        {(() => {
+          const POST_GRID = "54px 2.6fr 0.9fr 0.9fr 0.9fr 0.9fr 1.4fr";
+          const cols: Array<{ label: string; k?: PostSortKey; align: "left" | "right" }> = [
+            { label: "", align: "left" },
+            { label: "Post", align: "left" },
+            { label: "Reactions", k: "reactions", align: "right" },
+            { label: "Comments", k: "comments", align: "right" },
+            { label: "Shares", k: "shares", align: "right" },
+            { label: "Engagement", k: "engagement", align: "right" },
+            { label: "Date / Heure", k: "date", align: "right" },
+          ];
+          return (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: POST_GRID, gap: 10, padding: "0 20px 10px", borderBottom: "1px solid #1E2128", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "#6B7280" }}>
+                {cols.map((c, i) => c.k ? (
+                  <button key={i} onClick={() => clickPostSort(c.k!)} style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: c.align === "right" ? "flex-end" : "flex-start", background: "none", border: "none", cursor: "pointer", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: postSort.k === c.k ? "#D1D5DB" : "#6B7280", fontFamily: "IBM Plex Sans", fontWeight: 500, padding: 0 }}>
+                    <span>{c.label}</span>
+                    <span style={{ display: "inline-flex", opacity: postSort.k === c.k ? 1 : 0.35, color: postSort.k === c.k ? "#1877F2" : "#6B7280" }}>{postSort.k === c.k && postSort.dir === 1 ? <ChevronDown size={12} style={{ transform: "rotate(180deg)" }} /> : <ChevronDown size={12} />}</span>
+                  </button>
+                ) : <span key={i} style={{ textAlign: c.align }}>{c.label}</span>)}
+              </div>
+              {sortedPosts.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "#6B7280", fontSize: 13 }}>No posts found.</div>}
+              {sortedPosts.map((p, i) => {
+                const eng = p.reactions + p.comments + p.shares;
+                return (
+                  <div key={p.id} className="ms-trow" style={{ display: "grid", gridTemplateColumns: POST_GRID, gap: 10, alignItems: "center", padding: "12px 20px", borderBottom: i < sortedPosts.length - 1 ? "1px solid #15181E" : "none" }}>
+                    {p.full_picture ? <img src={p.full_picture} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover" }} /> : <Placeholder w={40} height={40} />}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <span style={{ color: p.permalink_url ? "#1877F2" : "#6B7280", display: "inline-flex", flexShrink: 0 }}>{p.full_picture ? <ImageIcon size={15} /> : <Link2 size={15} />}</span>
+                      <span style={{ fontSize: 13.5, color: "#F9FAFB", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.message || "(no text)"}</span>
+                    </div>
+                    {[p.reactions, p.comments, p.shares].map((v, k) => <span key={k} style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: k === 0 ? "#D1D5DB" : "#9AA1AC" }}>{engCell(v)}</span>)}
+                    <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: "#22C55E" }}>{engagementBlocked ? "—" : fmtNum(eng)}</span>
+                    <span style={{ textAlign: "right", fontSize: 12, color: "#6B7280", fontFamily: "JetBrains Mono" }}>{fmtDateTimeFull(p.created_time)}</span>
+                  </div>
+                );
+              })}
+            </>
+          );
+        })()}
+      </Card>
+    </div>
+  );
+}

@@ -62,6 +62,32 @@ class MetaTestResponse(BaseModel):
     error: Optional[str] = None
 
 
+# ─── Meta accounts (multi-clés) ──────────────────────────────────────────────
+
+
+class MetaAccountRequest(BaseModel):
+    label: Optional[str] = None
+    meta_access_token: Optional[str] = None
+    meta_ad_account_id: Optional[str] = None
+    meta_page_id: Optional[str] = None
+    meta_pixel_id: Optional[str] = None
+    preferred_currency: Optional[str] = None
+    timezone: Optional[str] = None
+    is_default: Optional[bool] = None
+
+
+class MetaAccountResponse(BaseModel):
+    id: str
+    label: str
+    meta_access_token_set: bool
+    meta_ad_account_id: Optional[str] = None
+    meta_page_id: Optional[str] = None
+    meta_pixel_id: Optional[str] = None
+    preferred_currency: Optional[str] = None
+    timezone: Optional[str] = None
+    is_default: bool = False
+
+
 # ─── Structured agent output ─────────────────────────────────────────────────
 
 
@@ -118,6 +144,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     attached_image_hash: Optional[str] = None
     attached_image_url: Optional[str] = None
+    account_id: Optional[str] = None
 
 
 class ToolCallInfo(BaseModel):
@@ -163,6 +190,14 @@ class CampaignSummary(BaseModel):
     ctr: float = 0.0
     cpc: float = 0.0
     conversions: int = 0
+    roas: float = 0.0
+    revenue: float = 0.0
+    roi: float = 0.0
+    # Métrique de performance choisie selon l'objectif (ROAS, CPL, CPE, CPM, CPC,
+    # CPI, Cost per message). Champs optionnels → non-breaking pour le frontend.
+    metric_name: Optional[str] = None
+    metric_value: Optional[float] = None
+    is_roas: Optional[bool] = None
 
 
 class DashboardSeriesPoint(BaseModel):
@@ -263,3 +298,15 @@ class ChatImageUploadResponse(BaseModel):
     image_hash: str
     preview_url: Optional[str] = None
     error: Optional[str] = None
+
+
+# ─── Sync (cache analytics) ──────────────────────────────────────────────────
+
+
+class SyncStatusResponse(BaseModel):
+    account_id: str
+    last_sync_at: Optional[str] = None
+    last_sync_status: Optional[str] = None  # success | error | running
+    last_error: Optional[str] = None
+    insights_synced_until: Optional[str] = None
+    running: bool = False

@@ -140,6 +140,37 @@ export interface CampaignSummary {
   ctr: number;
   cpc: number;
   conversions: number;
+  roas: number;
+  revenue: number;
+  roi: number;
+  // Métrique de performance selon l'objectif (ROAS, CPL, CPE, CPM, CPC, CPI…).
+  metric_name?: string | null;
+  metric_value?: number | null;
+  is_roas?: boolean | null;
+}
+
+/** État de la dernière synchronisation Meta → Supabase pour un compte. */
+export interface SyncStatus {
+  account_id: string;
+  last_sync_at?: string | null;
+  last_sync_status?: "success" | "error" | "running" | null;
+  last_error?: string | null;
+  insights_synced_until?: string | null;
+  running: boolean;
+}
+
+/** Une clé API Meta connectée (multi-comptes). Le token n'est jamais renvoyé —
+ *  seul `meta_access_token_set` indique s'il est configuré. */
+export interface MetaAccount {
+  id: string;
+  label: string;
+  meta_access_token_set: boolean;
+  meta_ad_account_id: string | null;
+  meta_page_id: string | null;
+  meta_pixel_id: string | null;
+  preferred_currency: string | null;
+  timezone: string | null;
+  is_default: boolean;
 }
 
 export interface DashboardKpi {
@@ -216,6 +247,8 @@ export interface CampaignDetail {
   demographics: DemoDatum[];
   placements: PlacementDatum[];
 }
+/** Onglet du panneau de détail = section chargée à la demande côté backend. */
+export type CampaignDetailSection = "adsets" | "ads" | "demographics" | "placements";
 
 export interface AudienceSummary {
   id: string;
@@ -306,6 +339,12 @@ function rangeQuery(r: DateRange): string {
   return `date_preset=${encodeURIComponent(r.preset || "last_30d")}`;
 }
 
+/** `&account_id=…` pour cibler la clé Meta sélectionnée (multi-comptes). Vide si
+ *  aucun compte n'est sélectionné → le backend retombe sur le compte par défaut. */
+function acctParam(accountId?: string | null): string {
+  return accountId ? `&account_id=${encodeURIComponent(accountId)}` : "";
+}
+
 export const api = {
   async signup(email: string, password: string, fullName?: string): Promise<AuthUser> {
     const data = await request<AuthResponse>(
@@ -371,40 +410,97 @@ export const api = {
       { method: "POST" },
     ),
 
-  getPageInfo: () => request<PageInfo>("/meta/page-info"),
-  getPageInsights: (days: number = 28) =>
-    request<PageInsights>(`/meta/page-insights?days=${days}`),
-  getPagePosts: (limit: number = 10) =>
-    request<PagePost[]>(`/meta/page-posts?limit=${limit}`),
+  // ── Comptes Meta (multi-clés) ──────────────────────────────────────────────
+  listAccounts: () => request<MetaAccount[]>("/meta/accounts"),
 
-  getPageSummary: () => request<PageSummary>("/meta/page-summary"),
+  createAccount: (body: Partial<{
+    label: string;
+    meta_access_token: string;
+    meta_ad_account_id: string;
+    meta_page_id: string;
+    meta_pixel_id: string;
+    preferred_currency: string;
+    timezone: string;
+    is_default: boolean;
+  }>) => request<MetaAccount>("/meta/accounts", { method: "POST", body: JSON.stringify(body) }),
 
-  getCampaignDetail: (campaignId: string, range: DateRange = { preset: "last_30d" }) =>
-    request<CampaignDetail>(`/meta/campaigns/${encodeURIComponent(campaignId)}/detail?${rangeQuery(range)}`),
+  updateAccount: (id: string, body: Partial<{
+    label: string;
+    meta_access_token: string;
+    meta_ad_account_id: string;
+    meta_page_id: string;
+    meta_pixel_id: string;
+    preferred_currency: string;
+    timezone: string;
+    is_default: boolean;
+  }>) => request<MetaAccount>(`/meta/accounts/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
 
-  getAudiences: () => request<AudienceSummary[]>("/meta/audiences"),
+  deleteAccount: (id: string) =>
+    request<{ ok: boolean }>(`/meta/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
-  getAudienceReach: (days: number | "all" = 30) =>
+  testAccount: (id: string) =>
+    request<{ ok: boolean; account_name?: string; error?: string }>(
+      `/meta/accounts/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    ),
+
+  getPageInfo: (accountId?: string | null) =>
+    request<PageInfo>(`/meta/page-info?_=1${acctParam(accountId)}`),
+  getPageInsights: (days: number = 28, accountId?: string | null) =>
+    request<PageInsights>(`/meta/page-insights?days=${days}${acctParam(accountId)}`),
+  getPagePosts: (limit: number = 10, accountId?: string | null) =>
+    request<PagePost[]>(`/meta/page-posts?limit=${limit}${acctParam(accountId)}`),
+
+  getPageSummary: (accountId?: string | null) =>
+    request<PageSummary>(`/meta/page-summary?_=1${acctParam(accountId)}`),
+
+  // `section` charge un seul onglet du panneau de détail (adsets|ads|demographics|
+  // placements) → ~2 appels Meta au lieu de 6. Les autres clés reviennent vides.
+  getCampaignDetail: (
+    campaignId: string,
+    range: DateRange = { preset: "last_30d" },
+    accountId?: string | null,
+    section?: CampaignDetailSection | null,
+  ) =>
+    request<CampaignDetail>(
+      `/meta/campaigns/${encodeURIComponent(campaignId)}/detail?${rangeQuery(range)}${acctParam(accountId)}${section ? `&section=${section}` : ""}`,
+    ),
+
+  getAudiences: (accountId?: string | null) =>
+    request<AudienceSummary[]>(`/meta/audiences?_=1${acctParam(accountId)}`),
+
+  getAudienceReach: (days: number | "all" = 30, accountId?: string | null) =>
     request<AudienceReach>(
-      days === "all" ? `/meta/audience-reach?period=all` : `/meta/audience-reach?days=${days}`,
+      (days === "all" ? `/meta/audience-reach?period=all` : `/meta/audience-reach?days=${days}`) + acctParam(accountId),
     ),
 
-  getCampaigns: (range: DateRange = { preset: "last_30d" }) =>
-    request<CampaignSummary[]>(`/meta/campaigns?${rangeQuery(range)}`),
+  getCampaigns: (range: DateRange = { preset: "last_30d" }, accountId?: string | null) =>
+    request<CampaignSummary[]>(`/meta/campaigns?${rangeQuery(range)}${acctParam(accountId)}`),
 
-  getDashboard: (days: number | "all" = 30) =>
+  getDashboard: (days: number | "all" = 30, accountId?: string | null, since?: string, until?: string) =>
     request<DashboardResponse>(
-      days === "all" ? `/meta/dashboard?period=all` : `/meta/dashboard?days=${days}`,
+      (days === "all"
+        ? `/meta/dashboard?period=all`
+        : since && until
+          ? `/meta/dashboard?days=${days}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`
+          : `/meta/dashboard?days=${days}`) + acctParam(accountId),
     ),
 
-  search: (q: string) =>
-    request<SearchResponse>(`/meta/search?q=${encodeURIComponent(q)}`),
+  search: (q: string, accountId?: string | null) =>
+    request<SearchResponse>(`/meta/search?q=${encodeURIComponent(q)}${acctParam(accountId)}`),
 
-  uploadChatImage: (file: File) => {
+  // ── Sync (cache analytics) ─────────────────────────────────────────────────
+  getSyncStatus: (accountId?: string | null) =>
+    request<SyncStatus>(`/api/sync/status?_=1${acctParam(accountId)}`),
+
+  triggerSync: (accountId: string) =>
+    request<SyncStatus>(`/api/sync/${encodeURIComponent(accountId)}`, { method: "POST" }),
+
+  uploadChatImage: (file: File, accountId?: string | null) => {
     const form = new FormData();
     form.append("file", file);
     return requestForm<{ image_hash: string; preview_url?: string; error?: string }>(
-      "/chat/upload-image",
+      `/chat/upload-image?_=1${acctParam(accountId)}`,
       form,
     );
   },
@@ -425,13 +521,14 @@ export const api = {
       `/conversations/${conversationId}/messages`,
     ),
 
-  chat: (message: string, conversationId?: string, attachedImageHash?: string | null) =>
+  chat: (message: string, conversationId?: string, attachedImageHash?: string | null, accountId?: string | null) =>
     request<ChatResponseT>("/chat", {
       method: "POST",
       body: JSON.stringify({
         message,
         conversation_id: conversationId,
         attached_image_hash: attachedImageHash || undefined,
+        account_id: accountId || undefined,
       }),
     }),
 };

@@ -1,9 +1,13 @@
+import asyncio
 import logging
+import os
 import socket
 import time
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import requests
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from facebook_business.exceptions import FacebookRequestError
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,21 +27,27 @@ from backend.auth import (
 from backend.config import CORS_ORIGINS
 from backend.db import (
     create_conversation,
+    create_meta_account,
+    delete_meta_account,
     get_conversation,
+    get_meta_account,
     get_user_settings,
     list_conversations,
+    list_meta_accounts,
     load_messages,
     log_tool_call,
     save_campaign_tree,
     save_message,
+    set_default_meta_account,
     touch_conversation,
+    update_meta_account,
     upsert_user_settings,
 )
-from backend import meta_pages
+from backend import dashboard, facebook_sync, meta_pages
+from backend.db import (
+    get_fb_sync_state as db_get_fb_sync_state,
+)
 from backend.meta_tools import (
-    _exact_windows,
-    get_account_audience_reach,
-    get_account_dashboard,
     get_campaign_detail,
     list_campaigns_with_insights,
     list_custom_audiences,
@@ -59,6 +69,8 @@ from backend.schemas import (
     DashboardSeriesPoint,
     LoginRequest,
     MessageOut,
+    MetaAccountRequest,
+    MetaAccountResponse,
     MetaSettingsRequest,
     MetaSettingsResponse,
     MetaTestResponse,
@@ -68,6 +80,7 @@ from backend.schemas import (
     SearchResultItem,
     SignupRequest,
     StructuredOutput,
+    SyncStatusResponse,
     ToolCallInfo,
     UserPublic,
     UserUpdateRequest,
@@ -76,7 +89,43 @@ from backend.schemas import (
 logger = logging.getLogger("metainsight")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-app = FastAPI(title="MetaInsight Agent API")
+
+# ─── Worker de sync Meta → Supabase (APScheduler) ─────────────────────────────
+# Le dashboard lit désormais le cache Supabase ; ce scheduler le tient à jour en
+# arrière-plan. Le SDK Meta est BLOQUANT → on exécute le sync dans un thread
+# (asyncio.to_thread) pour ne pas geler l'event loop FastAPI.
+
+SYNC_INTERVAL_MINUTES = int(os.environ.get("FB_SYNC_INTERVAL_MINUTES", "20"))
+SYNC_ON_STARTUP = os.environ.get("FB_SYNC_ON_STARTUP", "true").lower() != "false"
+
+scheduler = AsyncIOScheduler()
+
+
+async def _run_sync_job() -> None:
+    try:
+        await asyncio.to_thread(facebook_sync.sync_all_accounts)
+    except Exception:
+        logger.exception("fb_sync job crashed")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    scheduler.add_job(
+        _run_sync_job, "interval", minutes=SYNC_INTERVAL_MINUTES,
+        id="fb_sync", max_instances=1, coalesce=True,
+    )
+    scheduler.start()
+    logger.info("fb_sync scheduled every %d min", SYNC_INTERVAL_MINUTES)
+    if SYNC_ON_STARTUP:
+        # Sync initial non bloquant pour le démarrage du serveur.
+        asyncio.create_task(_run_sync_job())
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="MetaInsight Agent API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -169,20 +218,117 @@ def route_put_settings(
     return _mask_settings(saved)
 
 
-def _require_meta_settings(user_id: str, need_account: bool = False, need_page: bool = False) -> dict:
-    settings = get_user_settings(user_id)
-    if not settings or not settings.get("meta_access_token"):
+def _resolve_account(
+    user_id: str,
+    account_id: Optional[str] = None,
+    need_account: bool = False,
+    need_page: bool = False,
+) -> dict:
+    """Résout le compte Meta sélectionné (multi-clés) et valide les credentials
+    requis par la route. Remplace l'ancien `_require_meta_settings` mono-compte."""
+    acct = get_meta_account(user_id, account_id)
+    if not acct or not acct.get("meta_access_token"):
         raise HTTPException(status_code=400, detail="Meta access token is required.")
-    if need_account and not settings.get("meta_ad_account_id"):
+    if need_account and not acct.get("meta_ad_account_id"):
         raise HTTPException(status_code=400, detail="Meta ad account id is required.")
-    if need_page and not settings.get("meta_page_id"):
+    if need_page and not acct.get("meta_page_id"):
         raise HTTPException(status_code=400, detail="Meta page id is required.")
-    return settings
+    return acct
+
+
+def _preset_to_days(date_preset: Optional[str]) -> tuple[int, bool]:
+    """Traduit un date_preset Meta (last_7d, last_30d, maximum…) en (days, all_time)
+    pour les lectures cache. `maximum` → all_time."""
+    preset = (date_preset or "last_30d").strip().lower()
+    if preset == "maximum":
+        return 30, True
+    if preset == "today" or preset == "yesterday":
+        return 1, False
+    if preset.startswith("last_") and preset.endswith("d"):
+        try:
+            return max(1, int(preset[5:-1])), False
+        except ValueError:
+            pass
+    return 30, False
+
+
+def _mask_account(row: dict) -> MetaAccountResponse:
+    return MetaAccountResponse(
+        id=row["id"],
+        label=row.get("label") or "Compte Meta",
+        meta_access_token_set=bool(row.get("meta_access_token")),
+        meta_ad_account_id=row.get("meta_ad_account_id"),
+        meta_page_id=row.get("meta_page_id"),
+        meta_pixel_id=row.get("meta_pixel_id"),
+        preferred_currency=row.get("preferred_currency"),
+        timezone=row.get("timezone"),
+        is_default=bool(row.get("is_default")),
+    )
+
+
+# ─── Meta accounts (multi-clés) ──────────────────────────────────────────────
+
+
+@app.get("/meta/accounts", response_model=list[MetaAccountResponse])
+def route_list_accounts(
+    user: UserPublic = Depends(get_current_user),
+) -> list[MetaAccountResponse]:
+    return [_mask_account(a) for a in list_meta_accounts(user.id)]
+
+
+@app.post("/meta/accounts", response_model=MetaAccountResponse)
+def route_create_account(
+    body: MetaAccountRequest, user: UserPublic = Depends(get_current_user)
+) -> MetaAccountResponse:
+    patch = body.model_dump(exclude_unset=True)
+    make_default = patch.pop("is_default", None)
+    acct = create_meta_account(user.id, patch)
+    if make_default:
+        acct = set_default_meta_account(user.id, acct["id"]) or acct
+    return _mask_account(acct)
+
+
+@app.put("/meta/accounts/{account_id}", response_model=MetaAccountResponse)
+def route_update_account(
+    account_id: str, body: MetaAccountRequest, user: UserPublic = Depends(get_current_user)
+) -> MetaAccountResponse:
+    patch = body.model_dump(exclude_unset=True)
+    make_default = patch.pop("is_default", None)
+    acct = update_meta_account(user.id, account_id, patch)
+    if acct is None:
+        raise HTTPException(status_code=404, detail="Compte introuvable.")
+    if make_default:
+        acct = set_default_meta_account(user.id, account_id) or acct
+    return _mask_account(acct)
+
+
+@app.delete("/meta/accounts/{account_id}")
+def route_delete_account(
+    account_id: str, user: UserPublic = Depends(get_current_user)
+) -> dict:
+    delete_meta_account(user.id, account_id)
+    return {"ok": True}
+
+
+@app.post("/meta/accounts/{account_id}/test", response_model=MetaTestResponse)
+def route_test_account(
+    account_id: str, user: UserPublic = Depends(get_current_user)
+) -> MetaTestResponse:
+    acct = get_meta_account(user.id, account_id)
+    if not acct or not acct.get("meta_access_token") or not acct.get("meta_ad_account_id"):
+        return MetaTestResponse(ok=False, error="Token ou Ad Account ID manquant.")
+    ok, info = test_connection(acct["meta_access_token"], acct["meta_ad_account_id"])
+    if ok:
+        return MetaTestResponse(ok=True, account_name=info)
+    return MetaTestResponse(ok=False, error=info)
 
 
 @app.get("/meta/page-info")
-def route_meta_page_info(user: UserPublic = Depends(get_current_user)) -> dict:
-    settings = _require_meta_settings(user.id, need_page=True)
+def route_meta_page_info(
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    settings = _resolve_account(user.id, account_id, need_page=True)
     try:
         info = meta_pages.get_page_info(settings["meta_page_id"], settings["meta_access_token"])
     except Exception as exc:
@@ -202,9 +348,10 @@ def route_meta_page_info(user: UserPublic = Depends(get_current_user)) -> dict:
 @app.get("/meta/page-insights")
 def route_meta_page_insights(
     days: int = Query(28, ge=1, le=90),
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> dict:
-    settings = _require_meta_settings(user.id, need_page=True)
+    settings = _resolve_account(user.id, account_id, need_page=True)
     try:
         stats = meta_pages.get_page_insights(
             settings["meta_page_id"], settings["meta_access_token"], days=days
@@ -217,9 +364,10 @@ def route_meta_page_insights(
 @app.get("/meta/page-posts", response_model=list[PagePost])
 def route_meta_page_posts(
     limit: int = Query(10, ge=1, le=25),
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> list[PagePost]:
-    settings = _require_meta_settings(user.id, need_page=True)
+    settings = _resolve_account(user.id, account_id, need_page=True)
     try:
         posts = meta_pages.list_page_posts(
             settings["meta_page_id"], settings["meta_access_token"], limit=limit
@@ -231,9 +379,10 @@ def route_meta_page_posts(
 
 @app.get("/meta/page-summary", response_model=PageSummaryResponse)
 def route_meta_page_summary(
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> PageSummaryResponse:
-    settings = _require_meta_settings(user.id, need_page=True)
+    settings = _resolve_account(user.id, account_id, need_page=True)
     try:
         summary = meta_pages.get_page_post_summary(
             settings["meta_page_id"], settings["meta_access_token"], limit=50
@@ -260,24 +409,44 @@ def route_meta_campaign_detail(
     date_preset: str = Query("last_30d"),
     since: Optional[str] = Query(None),
     until: Optional[str] = Query(None),
+    # `section` = onglet demandé (adsets|ads|demographics|placements). Le frontend
+    # charge un onglet à la fois → ~2 appels Meta au lieu de 6 par ouverture, ce
+    # qui évite le "User request limit reached". Absent = tout (compat).
+    section: Optional[str] = Query(None),
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> CampaignDetailResponse:
-    settings = _require_meta_settings(user.id, need_account=True)
+    settings = _resolve_account(user.id, account_id, need_account=True)
+    out: dict = {"adsets": [], "ads": [], "demographics": [], "placements": []}
+    # Onglets adsets/ads → cache Supabase (instantané). Démographie/placements →
+    # live Meta (chargés à la demande au clic, breakdowns non synchronisés par
+    # campagne — cf. plan « Hors scope »).
     try:
-        detail = get_campaign_detail(
-            settings["meta_access_token"], campaign_id,
-            date_preset=date_preset, since=since, until=until,
-        )
+        days, all_time = _preset_to_days(date_preset)
+        start, end, _, _ = dashboard.resolve_window(days, all_time, since, until)
+        if section in (None, "adsets"):
+            out["adsets"] = dashboard.campaign_adsets(settings["meta_ad_account_id"], campaign_id, start, end)
+        if section in (None, "ads"):
+            out["ads"] = dashboard.campaign_ads(settings["meta_ad_account_id"], campaign_id, start, end)
+        if section in (None, "demographics", "placements"):
+            live = get_campaign_detail(
+                settings["meta_access_token"], campaign_id,
+                date_preset=date_preset, since=since, until=until,
+                section=section if section in ("demographics", "placements") else None,
+            )
+            out["demographics"] = live.get("demographics", [])
+            out["placements"] = live.get("placements", [])
     except Exception as exc:
         raise _meta_http_error(exc)
-    return CampaignDetailResponse(**detail)
+    return CampaignDetailResponse(**out)
 
 
 @app.get("/meta/audiences", response_model=list[AudienceSummary])
 def route_meta_audiences(
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> list[AudienceSummary]:
-    settings = _require_meta_settings(user.id, need_account=True)
+    settings = _resolve_account(user.id, account_id, need_account=True)
     try:
         auds = list_custom_audiences(
             settings["meta_access_token"], settings["meta_ad_account_id"]
@@ -291,15 +460,13 @@ def route_meta_audiences(
 def route_meta_audience_reach(
     days: int = Query(30, ge=1, le=90),
     period: Optional[str] = Query(None),
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> AudienceReachResponse:
-    settings = _require_meta_settings(user.id, need_account=True)
+    settings = _resolve_account(user.id, account_id, need_account=True)
     all_time = (period or "").lower() == "all"
     try:
-        reach = get_account_audience_reach(
-            settings["meta_access_token"], settings["meta_ad_account_id"],
-            days=days, all_time=all_time,
-        )
+        reach = dashboard.get_audience_reach(settings["meta_ad_account_id"], days=days, all_time=all_time)
     except Exception as exc:
         raise _meta_http_error(exc)
     return AudienceReachResponse(**reach)
@@ -310,16 +477,14 @@ def route_meta_campaigns(
     date_preset: str = Query("last_30d"),
     since: Optional[str] = Query(None),
     until: Optional[str] = Query(None),
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> list[CampaignSummary]:
-    settings = _require_meta_settings(user.id, need_account=True)
+    settings = _resolve_account(user.id, account_id, need_account=True)
+    days, all_time = _preset_to_days(date_preset)
     try:
-        rows = list_campaigns_with_insights(
-            settings["meta_access_token"],
-            settings["meta_ad_account_id"],
-            date_preset=date_preset,
-            since=since,
-            until=until,
+        rows = dashboard.list_campaigns(
+            settings["meta_ad_account_id"], days=days, all_time=all_time, since=since, until=until,
         )
     except Exception as exc:
         raise _meta_http_error(exc)
@@ -330,14 +495,16 @@ def route_meta_campaigns(
 def route_meta_dashboard(
     days: int = Query(30, ge=1, le=90),
     period: Optional[str] = Query(None),
+    since: Optional[str] = Query(None),
+    until: Optional[str] = Query(None),
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> DashboardResponse:
-    settings = _require_meta_settings(user.id, need_account=True)
+    settings = _resolve_account(user.id, account_id, need_account=True)
     all_time = (period or "").lower() == "all"
     try:
-        data = get_account_dashboard(
-            settings["meta_access_token"], settings["meta_ad_account_id"],
-            days=days, all_time=all_time,
+        data = dashboard.get_account_dashboard(
+            settings["meta_ad_account_id"], days=days, all_time=all_time, since=since, until=until,
         )
     except Exception as exc:
         raise _meta_http_error(exc)
@@ -371,12 +538,19 @@ def route_meta_dashboard(
             return f"{n/1_000:.1f}K"
         return f"{n}"
 
+    revenue = _f(data.get("revenue"))
+    roas = _f(data.get("roas"))
+    profit = _f(data.get("profit"))
+
     ch = data.get("changes") or {}
     kpis = [
         DashboardKpi(label="Impressions", value=fmt_int(impressions), raw=impressions, change=ch.get("impressions")),
         DashboardKpi(label="Clicks", value=fmt_int(clicks), raw=clicks, change=ch.get("clicks")),
         DashboardKpi(label="Reach", value=fmt_int(reach), raw=reach, change=ch.get("reach")),
         DashboardKpi(label="Spend", value=f"${spend:,.2f}", raw=spend, change=ch.get("spend")),
+        DashboardKpi(label="Revenue", value=f"${revenue:,.2f}", raw=revenue, change=ch.get("revenue")),
+        DashboardKpi(label="ROAS", value=f"{roas:.2f}x", raw=roas),
+        DashboardKpi(label="Profit", value=f"${profit:,.2f}", raw=profit),
         DashboardKpi(label="CTR", value=f"{ctr:.2f}%", raw=ctr, change=ch.get("ctr")),
         DashboardKpi(label="CPC", value=f"${cpc:.2f}", raw=cpc, change=ch.get("cpc")),
         DashboardKpi(label="CPM", value=f"${cpm:.2f}", raw=cpm, change=ch.get("cpm")),
@@ -392,20 +566,9 @@ def route_meta_dashboard(
     # results climbs automatically). Optional — ignore errors silently.
     top: list[CampaignSummary] = []
     try:
-        if all_time:
-            camps = list_campaigns_with_insights(
-                settings["meta_access_token"],
-                settings["meta_ad_account_id"],
-                date_preset="maximum",
-            )
-        else:
-            cur_range, _ = _exact_windows(days)
-            camps = list_campaigns_with_insights(
-                settings["meta_access_token"],
-                settings["meta_ad_account_id"],
-                since=cur_range["since"],
-                until=cur_range["until"],
-            )
+        camps = dashboard.list_campaigns(
+            settings["meta_ad_account_id"], days=days, all_time=all_time, since=since, until=until,
+        )
         camps.sort(
             key=lambda c: (
                 c.get("conversions", 0),
@@ -433,9 +596,10 @@ def route_meta_dashboard(
 @app.get("/meta/search", response_model=SearchResponse)
 def route_meta_search(
     q: str = Query(..., min_length=1),
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> SearchResponse:
-    settings = get_user_settings(user.id) or {}
+    settings = get_meta_account(user.id, account_id) or {}
     needle = q.strip().lower()
     results: list[SearchResultItem] = []
 
@@ -515,6 +679,54 @@ def route_test_settings(user: UserPublic = Depends(get_current_user)) -> MetaTes
     return MetaTestResponse(ok=False, error=info)
 
 
+# ─── Sync (cache analytics Meta → Supabase) ──────────────────────────────────
+
+
+def _sync_status(acct: dict) -> SyncStatusResponse:
+    # Le cache (et fb_sync_state) est keyé par ad account ; l'API reste exprimée
+    # en row id meta_accounts (ce que sélectionne l'UI) → on mappe ici.
+    state = db_get_fb_sync_state(acct.get("meta_ad_account_id") or "") or {}
+    return SyncStatusResponse(
+        account_id=acct["id"],
+        last_sync_at=state.get("last_sync_at"),
+        last_sync_status=state.get("last_sync_status"),
+        last_error=state.get("last_error"),
+        insights_synced_until=(
+            str(state["insights_synced_until"]) if state.get("insights_synced_until") else None
+        ),
+        running=state.get("last_sync_status") == "running",
+    )
+
+
+@app.post("/api/sync/{account_id}", response_model=SyncStatusResponse)
+async def route_sync_account(
+    account_id: str, user: UserPublic = Depends(get_current_user)
+) -> SyncStatusResponse:
+    """Force un sync immédiat du compte (bouton « Refresh » de l'UI / debug).
+    Le SDK Meta étant bloquant, on l'exécute dans un thread."""
+    acct = get_meta_account(user.id, account_id)
+    if not acct or not acct.get("meta_access_token") or not acct.get("meta_ad_account_id"):
+        raise HTTPException(status_code=400, detail="Compte Meta non configuré (token + ad account requis).")
+    try:
+        await asyncio.to_thread(facebook_sync.sync_account, acct)
+    except Exception as exc:
+        logger.exception("manual sync failed for account %s", acct["id"])
+        # L'état d'erreur est enregistré par le worker ; on renvoie un 502 lisible.
+        raise HTTPException(status_code=502, detail=f"Sync échoué : {exc}")
+    return _sync_status(acct)
+
+
+@app.get("/api/sync/status", response_model=SyncStatusResponse)
+def route_sync_status(
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> SyncStatusResponse:
+    acct = get_meta_account(user.id, account_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail="Aucun compte Meta.")
+    return _sync_status(acct)
+
+
 # ─── Conversations ───────────────────────────────────────────────────────────
 
 
@@ -574,9 +786,10 @@ def route_get_messages(
 @app.post("/chat/upload-image", response_model=ChatImageUploadResponse)
 async def route_chat_upload_image(
     file: UploadFile = File(...),
+    account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> ChatImageUploadResponse:
-    settings = _require_meta_settings(user.id, need_account=True)
+    settings = _resolve_account(user.id, account_id, need_account=True)
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file.")
@@ -592,7 +805,8 @@ async def route_chat_upload_image(
 
 @app.post("/chat", response_model=ChatResponse)
 def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) -> ChatResponse:
-    settings = get_user_settings(user.id)
+    # L'agent agit sur le compte sélectionné dans l'UI (multi-clés).
+    settings = get_meta_account(user.id, body.account_id)
 
     if body.conversation_id:
         conv = get_conversation(body.conversation_id, user.id)

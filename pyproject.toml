@@ -17,4 +17,5 @@ dependencies = [
     "pyjwt>=2.9",
     "pydantic[email]>=2.9",
     "python-multipart>=0.0.9",
+    "apscheduler>=3.10",
 ]
