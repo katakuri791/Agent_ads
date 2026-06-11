@@ -212,6 +212,8 @@ export interface PageSummary {
   top_posts: PagePost[];
   posts: PagePost[];
   engagement_blocked?: boolean;
+  // Raison Meta réelle quand l'engagement est indisponible (null si chargé).
+  engagement_blocked_reason?: string | null;
 }
 
 export interface AdSetDetail {

@@ -1,15 +1,39 @@
-import { useMemo, useState } from "react";
-import { AlertTriangle, ChevronDown, ExternalLink, Image as ImageIcon, Link2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Lock, ChevronDown, ExternalLink, Image as ImageIcon, Link2 } from "lucide-react";
 import type { PagePost } from "../lib/api";
 import { fmtNum, fmtDateTimeFull } from "../lib/format";
 import { Card, KPICard, Placeholder, SectionTitle, LoadingOverlay, type Kpi } from "../components/ms/primitives";
 import { ConnectPrompt } from "../components/shared/states";
 import { usePageData } from "../hooks/useMetaData";
+import { useAccount } from "../providers/AccountProvider";
 
 type PostSortKey = "date" | "engagement" | "reactions" | "comments" | "shares";
 
 export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => void }) {
   const { data } = usePageData();
+  const { selectedAccountId } = useAccount();
+
+  const engagementReason = data?.summary?.engagement_blocked_reason;
+  const apiErrorMsg = data?.apiError ?? null;
+  const isEngagementIssue =
+    !!data?.summary?.engagement_blocked ||
+    (!!apiErrorMsg && /#10|pages_read_engagement/i.test(apiErrorMsg));
+
+  // Détail technique réservé au développeur (console uniquement) — l'utilisateur,
+  // lui, ne voit qu'un message court (cf. bannière ci-dessous). On ne logge qu'au
+  // changement de cause pour éviter le spam à chaque rerender.
+  useEffect(() => {
+    if (isEngagementIssue) {
+      console.warn("[Facebook API] Engagement load failed:", {
+        reason: engagementReason || apiErrorMsg,
+        accountId: selectedAccountId,
+        endpoint: "GET /{page-id}/posts?fields=reactions.summary(total_count),comments.summary(total_count),shares",
+        hint: "Token sans pages_read_engagement/pages_show_list — voir GET /meta/page-engagement-debug",
+      });
+    } else if (apiErrorMsg) {
+      console.warn("[Meta API] Page data partially failed:", { reason: apiErrorMsg, accountId: selectedAccountId });
+    }
+  }, [isEngagementIssue, engagementReason, apiErrorMsg, selectedAccountId]);
 
   const [postSort, setPostSort] = useState<{ k: PostSortKey; dir: number }>({ k: "date", dir: -1 });
   const sortedPosts = useMemo(() => {
@@ -27,7 +51,7 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
 
   if (!data) return <LoadingOverlay fullPage delay={0} messages={["Chargement de la page Facebook…", "Récupération des posts et de l'engagement…"]} />;
   if (data.configError) return <ConnectPrompt onGoToSettings={onGoToSettings} message={data.configError} />;
-  const { info, summary, apiError } = data;
+  const { info, summary } = data;
   const engagementBlocked = !!summary?.engagement_blocked;
   const engCell = (n: number | undefined) => (engagementBlocked ? "—" : fmtNum(n || 0));
 
@@ -47,19 +71,18 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {(engagementBlocked || (apiError && /#10|pages_read_engagement/i.test(apiError))) ? (
+      {isEngagementIssue ? (
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderRadius: 10, background: "#F59E0B12", border: "1px solid #F59E0B30", color: "#FCD9A0", fontSize: 12.5 }}>
-          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1, color: "#F59E0B" }} />
+          <Lock size={15} style={{ flexShrink: 0, marginTop: 1, color: "#F59E0B" }} />
           <span>
-            Les compteurs d'engagement (likes, commentaires, partages) ne sont pas exposés par l'API Meta pour cette page.
-            Ta permission <b style={{ fontFamily: "JetBrains Mono", color: "#FCD9A0" }}>pages_read_engagement</b> est bien accordée — le blocage vient de la fonctionnalité <b style={{ fontFamily: "JetBrains Mono", color: "#FCD9A0" }}>Page Public Content Access</b>, qui requiert une <b>App Review</b> de ton app Meta (régénérer le token ne suffit pas).
-            Tes posts et l'identité de la page restent affichés ; l'engagement est marqué « — » (indisponible).
+            Accès limité — les likes et commentaires nécessitent une autorisation supplémentaire.
+            {" "}Tes posts et l'identité de la page restent affichés ; l'engagement est marqué « — ».
           </span>
         </div>
-      ) : apiError ? (
+      ) : apiErrorMsg ? (
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderRadius: 10, background: "#F59E0B12", border: "1px solid #F59E0B30", color: "#FCD9A0", fontSize: 12.5 }}>
-          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1, color: "#F59E0B" }} />
-          <span>Certaines données Meta n'ont pas pu être chargées : {apiError}. Le reste de la page reste affiché.</span>
+          <Lock size={15} style={{ flexShrink: 0, marginTop: 1, color: "#F59E0B" }} />
+          <span>Certaines données Meta n'ont pas pu être chargées pour le moment. Le reste de la page reste affiché.</span>
         </div>
       ) : null}
       <div style={{ position: "relative", borderRadius: 14, overflow: "hidden", border: "1px solid #1E2128" }}>

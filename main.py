@@ -403,6 +403,24 @@ def route_meta_page_summary(
     return PageSummaryResponse(**summary)
 
 
+@app.get("/meta/page-engagement-debug")
+def route_meta_page_engagement_debug(
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    """Endpoint de diagnostic : remonte la VRAIE cause de l'absence d'engagement
+    (token de page non résolu, scope manquant, token expiré…) au lieu du faux
+    message « App Review ». Affiche /me/accounts (la page cible a-t-elle un token ?)
+    et la sonde brute /{page}/posts avec le message Meta exact (code/subcode)."""
+    settings = _resolve_account(user.id, account_id, need_page=True)
+    try:
+        return meta_pages.diagnose_page_engagement(
+            settings["meta_page_id"], settings["meta_access_token"]
+        )
+    except Exception as exc:
+        raise _meta_http_error(exc)
+
+
 @app.get("/meta/campaigns/{campaign_id}/detail", response_model=CampaignDetailResponse)
 def route_meta_campaign_detail(
     campaign_id: str,

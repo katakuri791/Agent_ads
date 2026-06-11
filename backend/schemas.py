@@ -248,6 +248,9 @@ class PageSummaryResponse(BaseModel):
     top_posts: list[PagePost] = []
     posts: list[PagePost] = []
     engagement_blocked: bool = False
+    # Raison Meta réelle quand l'engagement est indisponible (token de page non
+    # résolu, scope manquant, token expiré…). None si l'engagement est bien chargé.
+    engagement_blocked_reason: Optional[str] = None
 
 
 class CampaignDetailResponse(BaseModel):

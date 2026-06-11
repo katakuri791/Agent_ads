@@ -9,10 +9,13 @@ on the fly via /me/accounts.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 GRAPH = "https://graph.facebook.com/v21.0"
 TIMEOUT = 20
@@ -40,25 +43,49 @@ def _check(resp: requests.Response) -> dict:
 
 
 def resolve_page_token(user_token: str, page_id: str) -> str:
-    """Find the Page Access Token for a given page_id by listing the user's pages.
+    """Résout le Page Access Token pour `page_id`. Gère les DEUX types de token :
 
-    Page Access Tokens are required for publishing and for some insights.
-    """
-    resp = requests.get(
-        f"{GRAPH}/me/accounts",
-        params={"access_token": user_token, "fields": "id,access_token,name"},
+    1. Token UTILISATEUR → on liste les pages gérées via /me/accounts (scope
+       `pages_show_list`) et on en extrait l'access_token de la page cible.
+    2. Token de PAGE déjà fourni → /me/accounts renvoie alors l'erreur (#100)
+       « nonexisting field (accounts) » (un node Page n'a pas d'arête accounts).
+       Dans ce cas on vérifie via /me que le token EST bien celui de la page cible
+       et on le retourne tel quel.
+
+    Un Page Access Token (+ `pages_read_engagement`) est requis pour lire les
+    summaries d'engagement et pour publier."""
+    # Cas 1 : token utilisateur — énumération des pages gérées.
+    try:
+        data = _check(requests.get(
+            f"{GRAPH}/me/accounts",
+            params={"access_token": user_token, "fields": "id,access_token,name"},
+            timeout=TIMEOUT,
+        ))
+        for p in data.get("data", []):
+            if str(p.get("id")) == str(page_id):
+                token = p.get("access_token")
+                if not token:
+                    raise GraphError("Page trouvée mais aucun access_token retourné.")
+                return token
+        # Page absente de la liste : peut-être un token de page → on tente le cas 2.
+    except GraphError as e:
+        # /me/accounts échoue typiquement avec (#100) quand le token est DÉJÀ un
+        # token de page (me = node Page, qui n'a pas de champ `accounts`).
+        logger.info("/me/accounts indisponible (token de page probable ?) : %s", e)
+
+    # Cas 2 : le token fourni est peut-être directement celui de la page cible.
+    me = _check(requests.get(
+        f"{GRAPH}/me",
+        params={"access_token": user_token, "fields": "id,name"},
         timeout=TIMEOUT,
-    )
-    data = _check(resp)
-    pages = data.get("data", [])
-    for p in pages:
-        if str(p.get("id")) == str(page_id):
-            token = p.get("access_token")
-            if not token:
-                raise GraphError("Page trouvée mais aucun access_token retourné.")
-            return token
+    ))
+    if str(me.get("id")) == str(page_id):
+        return user_token  # le token fourni EST le Page Access Token de la page cible
+
     raise GraphError(
-        f"Page id={page_id} introuvable parmi les pages gérées par cet utilisateur."
+        f"Page id={page_id} introuvable : le token n'énumère pas cette page "
+        f"(/me/accounts) et n'est pas non plus le token de cette page "
+        f"(/me.id={me.get('id')})."
     )
 
 
@@ -92,16 +119,33 @@ _POST_FIELDS = (
 _POST_FIELDS_MINIMAL = "message,created_time,permalink_url,full_picture"
 
 
-def _fetch_posts(page_id: str, token: str, params: dict[str, Any]) -> tuple[dict, bool]:
-    """GET /{page}/posts, degrading to minimal fields if the engagement fields
-    trip a permission error. Returns (response_json, engagement_blocked)."""
+def _fetch_posts(
+    page_id: str, token: str, params: dict[str, Any]
+) -> tuple[dict, Optional[str]]:
+    """GET /{page}/posts. En cas d'erreur sur les champs d'engagement, on dégrade
+    vers des champs minimaux MAIS on conserve le message Meta réel comme `reason`.
+
+    Retourne (json, reason) où `reason` est None si l'engagement a bien été chargé,
+    sinon la chaîne de l'erreur Meta exacte (message + code + subcode). On ne masque
+    plus la cause derrière un simple booléen."""
     try:
-        return _check(requests.get(f"{GRAPH}/{page_id}/posts", params={**params, "fields": _POST_FIELDS}, timeout=TIMEOUT)), False
-    except GraphError:
-        # Retry without the engagement summaries; if this still fails, the token
-        # has a deeper problem, so let that error surface.
-        data = _check(requests.get(f"{GRAPH}/{page_id}/posts", params={**params, "fields": _POST_FIELDS_MINIMAL}, timeout=TIMEOUT))
-        return data, True
+        data = _check(requests.get(
+            f"{GRAPH}/{page_id}/posts",
+            params={**params, "fields": _POST_FIELDS},
+            timeout=TIMEOUT,
+        ))
+        return data, None
+    except GraphError as e:
+        reason = str(e)  # ← on garde le message Meta exact (code/subcode)
+        logger.warning("Engagement non chargé sur /%s/posts : %s", page_id, reason)
+        # Re-essai en champs minimaux : si ça échoue encore, le token a un problème
+        # plus profond, on laisse donc cette erreur remonter.
+        data = _check(requests.get(
+            f"{GRAPH}/{page_id}/posts",
+            params={**params, "fields": _POST_FIELDS_MINIMAL},
+            timeout=TIMEOUT,
+        ))
+        return data, reason
 
 
 def _parse_post(row: dict[str, Any]) -> dict[str, Any]:
@@ -117,20 +161,29 @@ def _parse_post(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _page_token_or_user(page_id: str, user_token: str) -> str:
-    """Reading a Page's own posts (and their reaction/comment summaries) needs a
-    Page access token. Fall back to the user token if it can't be resolved."""
+def _page_token_or_user(
+    page_id: str, user_token: str
+) -> tuple[str, bool, Optional[str]]:
+    """Lire les posts d'une Page (et leurs summaries réactions/commentaires) exige
+    un Page Access Token. Si on ne peut pas le résoudre, on retombe sur le token
+    utilisateur MAIS on journalise et on expose la raison — au lieu de prétendre
+    silencieusement que c'est un problème d'App Review.
+
+    Retourne (token, used_page_token, token_error) où `used_page_token` indique si
+    on a bien obtenu un Page Access Token, et `token_error` la raison de l'échec."""
     try:
-        return resolve_page_token(user_token, page_id)
-    except GraphError:
-        return user_token
+        return resolve_page_token(user_token, page_id), True, None
+    except GraphError as e:
+        msg = str(e)
+        logger.warning("Page token non résolu pour page=%s : %s", page_id, msg)
+        return user_token, False, msg
 
 
 def list_page_posts(
     page_id: str, user_token: str, limit: int = 5
 ) -> list[dict[str, Any]]:
-    token = _page_token_or_user(page_id, user_token)
-    data, _ = _fetch_posts(page_id, token, {"access_token": token, "limit": limit})
+    token, _used_page_token, _token_error = _page_token_or_user(page_id, user_token)
+    data, _reason = _fetch_posts(page_id, token, {"access_token": token, "limit": limit})
     return [_parse_post(row) for row in data.get("data", [])]
 
 
@@ -140,17 +193,37 @@ def get_page_post_summary(
     """Aggregate the page's recent posts: counts + likes/comments/shares totals,
     plus the top 3 posts by engagement. Everything from the real /posts edge.
 
-    Degrades gracefully: if the token lacks `pages_read_engagement`, posts still
-    load with engagement at 0 and `engagement_blocked` flags the limitation."""
-    token = _page_token_or_user(page_id, user_token)
+    Dégradation gracieuse : si l'engagement est réellement indisponible, les posts
+    se chargent quand même (engagement à 0) et `engagement_blocked_reason` porte la
+    VRAIE raison Meta (token de page non résolu, scope manquant, token expiré…)."""
+    token, used_page_token, token_error = _page_token_or_user(page_id, user_token)
     base = {"access_token": token, "limit": limit}
     # `summary=true` gives an exact total_count but is not supported on every
     # edge — fall back to a plain request and count what we fetched.
     try:
-        data, blocked = _fetch_posts(page_id, token, {**base, "summary": "true"})
+        data, reason = _fetch_posts(page_id, token, {**base, "summary": "true"})
     except GraphError:
-        data, blocked = _fetch_posts(page_id, token, base)
+        data, reason = _fetch_posts(page_id, token, base)
     posts = [_parse_post(row) for row in data.get("data", [])]
+
+    # La VRAIE raison vient du chargement effectif de l'engagement sur /posts :
+    # `reason` est autoritaire. Un échec de résolution du Page Token (`token_error`)
+    # n'est ajouté qu'en CONTEXTE — car un token de page utilisé directement peut
+    # très bien charger l'engagement même si /me/accounts a échoué (#100).
+    engagement_blocked_reason: Optional[str]
+    if reason and token_error:
+        engagement_blocked_reason = (
+            f"{reason} — résolution du Page Token : {token_error} "
+            "(scopes requis : pages_read_engagement + pages_show_list)."
+        )
+    elif reason:
+        engagement_blocked_reason = reason
+    else:
+        # Engagement chargé correctement → pas de blocage, même si on a dû recourir
+        # à un token de repli (on le journalise seulement à titre informatif).
+        if token_error:
+            logger.info("Engagement chargé malgré la résolution token : %s", token_error)
+        engagement_blocked_reason = None
 
     total = (data.get("summary") or {}).get("total_count")
     posts_count = int(total) if isinstance(total, (int, float)) else len(posts)
@@ -169,7 +242,9 @@ def get_page_post_summary(
         "shares": shares,
         "top_posts": top_posts,
         "posts": posts,
-        "engagement_blocked": blocked,
+        # bool conservé pour rétro-compatibilité ; la raison réelle est exposée à côté.
+        "engagement_blocked": bool(engagement_blocked_reason),
+        "engagement_blocked_reason": engagement_blocked_reason,
     }
 
 
@@ -205,8 +280,11 @@ def get_page_insights(
 
     try:
         page_token = resolve_page_token(user_token, page_id)
-    except GraphError:
-        page_token = user_token  # fallback — may still work for some metrics
+    except GraphError as e:
+        # Fallback sur le token utilisateur (peut encore marcher pour certains
+        # metrics) — mais on journalise la raison au lieu de l'avaler.
+        logger.warning("Page token non résolu pour insights page=%s : %s", page_id, e)
+        page_token = user_token
 
     totals: dict[str, int] = {
         "impressions": 0, "engaged_users": 0, "post_engagements": 0,
@@ -264,3 +342,121 @@ def get_page_insights(
         totals["fans"] = 0
 
     return totals
+
+
+def _raw_error(resp: requests.Response) -> Optional[dict[str, Any]]:
+    """Extrait l'objet `error` brut de Meta (message + code + subcode +
+    error_user_msg) sans le tronquer comme le fait `_check`. Retourne None si la
+    réponse est un succès JSON."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return {"message": f"Réponse non JSON ({resp.status_code})", "raw": resp.text[:300]}
+    if isinstance(data, dict) and "error" in data:
+        err = data["error"]
+        return {
+            "message": err.get("message"),
+            "type": err.get("type"),
+            "code": err.get("code"),
+            "error_subcode": err.get("error_subcode"),
+            "error_user_title": err.get("error_user_title"),
+            "error_user_msg": err.get("error_user_msg"),
+            "fbtrace_id": err.get("fbtrace_id"),
+        }
+    if not resp.ok:
+        return {"message": resp.text[:300], "code": resp.status_code}
+    return None
+
+
+def diagnose_page_engagement(page_id: str, user_token: str) -> dict[str, Any]:
+    """Utilitaire de diagnostic : à partir du token utilisateur, met en évidence
+    la VRAIE cause de l'absence d'engagement (et non le faux message « App Review »).
+
+    Retourne un dict structuré :
+    - `accounts` : pages listées par /me/accounts, avec un booléen `has_token` par
+      page (le token n'est jamais exposé en clair), et des flags pour la page cible.
+    - `token_resolution` : a-t-on obtenu un Page Access Token, sinon pourquoi.
+    - `posts_probe` : appel brut sur /{page}/posts avec les summaries d'engagement,
+      utilisant le Page Access Token quand il est disponible. En cas d'erreur, le
+      message Meta exact (code/subcode/error_user_msg) est remonté tel quel.
+    """
+    out: dict[str, Any] = {"page_id": page_id, "graph_version": GRAPH}
+
+    # 0) /me — quel type de node ce token désigne-t-il ? Si me.id == page_id, le
+    # token est DÉJÀ un Page Access Token (et non un token utilisateur).
+    try:
+        me = _check(requests.get(
+            f"{GRAPH}/me",
+            params={"access_token": user_token, "fields": "id,name"},
+            timeout=TIMEOUT,
+        ))
+        out["token_identity"] = {
+            "me_id": str(me.get("id")),
+            "me_name": me.get("name"),
+            "is_page_token": str(me.get("id")) == str(page_id),
+        }
+    except GraphError as e:
+        out["token_identity"] = {"error": str(e)}
+
+    # 1) /me/accounts — la page cible apparaît-elle, avec un access_token ?
+    try:
+        resp = requests.get(
+            f"{GRAPH}/me/accounts",
+            params={"access_token": user_token, "fields": "id,name,access_token"},
+            timeout=TIMEOUT,
+        )
+        err = _raw_error(resp)
+        if err:
+            out["accounts"] = {"error": err}
+        else:
+            pages = resp.json().get("data", [])
+            listed = [
+                {
+                    "id": str(p.get("id")),
+                    "name": p.get("name"),
+                    "has_token": bool(p.get("access_token")),
+                }
+                for p in pages
+            ]
+            target = next((p for p in listed if p["id"] == str(page_id)), None)
+            out["accounts"] = {
+                "count": len(listed),
+                "pages": listed,
+                "target_page_found": target is not None,
+                "target_page_has_token": bool(target and target["has_token"]),
+            }
+    except requests.RequestException as e:
+        out["accounts"] = {"error": {"message": f"Requête /me/accounts échouée : {e}"}}
+
+    # 2) Résolution du Page Access Token (pour la sonde /posts).
+    token, used_page_token, token_error = _page_token_or_user(page_id, user_token)
+    out["token_resolution"] = {
+        "used_page_token": used_page_token,
+        "token_error": token_error,
+    }
+
+    # 3) Sonde brute /{page}/posts avec les summaries d'engagement.
+    probe_fields = (
+        "message,reactions.summary(total_count),"
+        "comments.summary(total_count),shares"
+    )
+    try:
+        resp = requests.get(
+            f"{GRAPH}/{page_id}/posts",
+            params={"access_token": token, "fields": probe_fields, "limit": 3},
+            timeout=TIMEOUT,
+        )
+        err = _raw_error(resp)
+        if err:
+            out["posts_probe"] = {"ok": False, "error": err}
+        else:
+            rows = resp.json().get("data", [])
+            out["posts_probe"] = {
+                "ok": True,
+                "sample_count": len(rows),
+                "first_post": rows[0] if rows else None,
+            }
+    except requests.RequestException as e:
+        out["posts_probe"] = {"ok": False, "error": {"message": f"Requête /posts échouée : {e}"}}
+
+    return out
