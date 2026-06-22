@@ -116,6 +116,8 @@ class CampaignBrief(BaseModel):
     link: Optional[str] = None
     image_prompt: Optional[str] = None
     image_hash: Optional[str] = None
+    # video_id : si l'annonce utilise une vidéo plutôt qu'une image.
+    video_id: Optional[str] = None
     estimated_reach: Optional[str] = None
     notes: Optional[str] = None
 
@@ -133,7 +135,35 @@ class InsightAnswer(BaseModel):
     recommendations: list[str] = Field(default_factory=list)
 
 
-StructuredOutput = Union[CampaignBrief, InsightAnswer]
+class QuestionOption(BaseModel):
+    value: str
+    label: str
+    hint: Optional[str] = None
+
+
+class Question(BaseModel):
+    id: str
+    label: str
+    # single = un seul choix ; multi = plusieurs ; text = champ libre ;
+    # media = upload d'une photo ou d'une vidéo.
+    type: Literal["single", "multi", "text", "media"] = "single"
+    options: list[QuestionOption] = Field(default_factory=list)
+    # allow_custom = afficher un champ « Autre / préciser » sous le QCM quand
+    # l'utilisateur ne trouve pas son choix dans la liste.
+    allow_custom: bool = True
+    placeholder: Optional[str] = None
+    required: bool = True
+
+
+class CampaignQuestionnaire(BaseModel):
+    kind: Literal["campaign_questionnaire"] = "campaign_questionnaire"
+    title: str = "Création de campagne"
+    intro: Optional[str] = None
+    questions: list[Question] = Field(default_factory=list)
+    submit_label: str = "Générer le brief"
+
+
+StructuredOutput = Union[CampaignBrief, InsightAnswer, CampaignQuestionnaire]
 
 
 # ─── Chat ────────────────────────────────────────────────────────────────────
@@ -300,6 +330,11 @@ class SearchResponse(BaseModel):
 class ChatImageUploadResponse(BaseModel):
     image_hash: str
     preview_url: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ChatVideoUploadResponse(BaseModel):
+    video_id: str
     error: Optional[str] = None
 
 

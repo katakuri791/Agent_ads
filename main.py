@@ -9,14 +9,16 @@ from typing import Optional
 import requests
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from facebook_business.exceptions import FacebookRequestError
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.agent import (
     build_agent,
+    build_campaign_questionnaire,
     extract_final_reply,
     extract_tool_calls,
     history_to_lc_messages,
+    wants_campaign_creation,
 )
 from backend.auth import (
     get_current_user,
@@ -53,16 +55,19 @@ from backend.meta_tools import (
     list_custom_audiences,
     test_connection,
     upload_image_bytes,
+    upload_video_bytes,
 )
 from backend.schemas import (
     AudienceReachResponse,
     AudienceSummary,
     AuthResponse,
     CampaignDetailResponse,
+    CampaignQuestionnaire,
     CampaignSummary,
     ChatImageUploadResponse,
     ChatRequest,
     ChatResponse,
+    ChatVideoUploadResponse,
     ConversationSummary,
     DashboardKpi,
     DashboardResponse,
@@ -419,6 +424,49 @@ def route_meta_page_engagement_debug(
         )
     except Exception as exc:
         raise _meta_http_error(exc)
+
+
+@app.post("/meta/page-posts")
+async def route_create_page_post(
+    message: str = Form(""),
+    link: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    """Publie un post sur la page Facebook de l'utilisateur (texte, lien, ou
+    photo + légende). La publication est immédiate et irréversible."""
+    settings = _resolve_account(user.id, account_id, need_page=True)
+    message = (message or "").strip()
+    link = (link or "").strip() or None
+
+    image_data = await image.read() if image is not None else b""
+    if image_data and len(image_data) > 30 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image trop lourde (>30 Mo).")
+    if not message and not image_data:
+        raise HTTPException(status_code=400, detail="Un message ou une image est requis.")
+
+    try:
+        if image_data:
+            result = meta_pages.create_page_photo_post(
+                settings["meta_page_id"],
+                settings["meta_access_token"],
+                image_data,
+                message=message or None,
+                filename=image.filename or "upload.jpg",
+            )
+        else:
+            result = meta_pages.create_page_post(
+                settings["meta_page_id"],
+                settings["meta_access_token"],
+                message,
+                link=link,
+            )
+    except Exception as exc:
+        raise _meta_http_error(exc)
+
+    post_id = result.get("post_id") or result.get("id")
+    return {"ok": True, "post_id": post_id}
 
 
 @app.get("/meta/campaigns/{campaign_id}/detail", response_model=CampaignDetailResponse)
@@ -821,6 +869,42 @@ async def route_chat_upload_image(
     return ChatImageUploadResponse(image_hash=image_hash or "")
 
 
+@app.post("/chat/upload-video", response_model=ChatVideoUploadResponse)
+async def route_chat_upload_video(
+    file: UploadFile = File(...),
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> ChatVideoUploadResponse:
+    settings = _resolve_account(user.id, account_id, need_account=True)
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (>200 MB).")
+    video_id, err = upload_video_bytes(
+        settings["meta_access_token"], settings["meta_ad_account_id"], data, file.filename or "video.mp4"
+    )
+    if err:
+        return ChatVideoUploadResponse(video_id="", error=err)
+    return ChatVideoUploadResponse(video_id=video_id or "")
+
+
+@app.get("/chat/campaign-questionnaire", response_model=CampaignQuestionnaire)
+def route_campaign_questionnaire(
+    user: UserPublic = Depends(get_current_user),
+) -> CampaignQuestionnaire:
+    """QCM de création de campagne en JSON. Déterministe — utilisé par le bouton
+    « Créer une campagne » du chat (affichage garanti, sans appel LLM)."""
+    return build_campaign_questionnaire()
+
+
+# Réponse courte (sans markdown) qui accompagne l'affichage du QCM.
+_QCM_REPLY = (
+    "J'affiche un questionnaire pour cadrer ta campagne. "
+    "Réponds aux questions ci-dessous puis valide pour que je prépare ton brief."
+)
+
+
 @app.post("/chat", response_model=ChatResponse)
 def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) -> ChatResponse:
     # L'agent agit sur le compte sélectionné dans l'UI (multi-clés).
@@ -852,6 +936,27 @@ def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) 
         body.message,
         {"image_hash": body.attached_image_hash} if body.attached_image_hash else {},
     )
+
+    # Court-circuit déterministe : si l'utilisateur veut créer une campagne (et
+    # n'est pas en train de soumettre ses réponses au QCM), on renvoie le QCM en
+    # JSON directement — sans dépendre du tool-calling du LLM (peu fiable ici).
+    is_questionnaire_answer = body.message.lstrip().startswith("[Réponses au questionnaire")
+    if wants_campaign_creation(body.message) and not is_questionnaire_answer:
+        questionnaire = build_campaign_questionnaire()
+        save_message(
+            conversation_id,
+            user.id,
+            "assistant",
+            _QCM_REPLY,
+            {"structured": questionnaire.model_dump()},
+        )
+        touch_conversation(conversation_id)
+        return ChatResponse(
+            conversation_id=conversation_id,
+            reply=_QCM_REPLY,
+            tool_calls=[],
+            structured=questionnaire,
+        )
 
     lc_history = history_to_lc_messages(history)
     from langchain_core.messages import HumanMessage
@@ -902,6 +1007,15 @@ def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) 
             # If both are present, brief takes precedence (user asked to create).
             if structured is None:
                 structured = InsightAnswer(**persist["last_insight"])
+        except Exception:
+            pass
+    if persist.get("last_questionnaire"):
+        from backend.schemas import CampaignQuestionnaire
+
+        try:
+            # Le brief (création confirmée) prime toujours sur le QCM (cadrage).
+            if structured is None:
+                structured = CampaignQuestionnaire(**persist["last_questionnaire"])
         except Exception:
             pass
 

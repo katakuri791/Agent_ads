@@ -267,6 +267,28 @@ def create_page_post(
     return _check(resp)
 
 
+def create_page_photo_post(
+    page_id: str,
+    user_token: str,
+    image_bytes: bytes,
+    message: Optional[str] = None,
+    filename: str = "upload.jpg",
+) -> dict[str, Any]:
+    """Publish a photo post (image + optional caption). Uses /{page-id}/photos
+    with the uploaded bytes as `source`. Requires a Page Access Token."""
+    page_token = resolve_page_token(user_token, page_id)
+    data: dict[str, Any] = {"access_token": page_token}
+    if message:
+        data["message"] = message
+    resp = requests.post(
+        f"{GRAPH}/{page_id}/photos",
+        data=data,
+        files={"source": (filename, image_bytes)},
+        timeout=TIMEOUT,
+    )
+    return _check(resp)
+
+
 def get_page_insights(
     page_id: str, user_token: str, days: int = 28
 ) -> dict[str, int]:

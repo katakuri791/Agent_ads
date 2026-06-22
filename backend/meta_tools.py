@@ -110,13 +110,17 @@ def build_meta_tools(
         daily_budget: int,
         ad_message: str,
         link: str,
-        image_hash: str,
+        image_hash: str = "",
+        video_id: str = "",
         countries: list[str] = ["MA"],
         age_min: int = 18,
         age_max: int = 65,
         optimization_goal: str = "LINK_CLICKS",
+        cta: str = "LEARN_MORE",
     ) -> str:
         """Crée une campagne Meta Ads complète (campagne + ad set + creative + ad), tout en PAUSED.
+
+        Le visuel peut être une PHOTO (image_hash) OU une VIDÉO (video_id) — fournis l'un des deux.
 
         Args:
             campaign_name: nom de la campagne
@@ -124,7 +128,8 @@ def build_meta_tools(
             daily_budget: budget quotidien EN CENTIMES (1000 = 10.00 dans la devise du compte)
             ad_message: texte de l'annonce
             link: URL de destination
-            image_hash: hash hex d'une image déjà uploadée (utiliser upload_image ou upload_image_from_url d'abord)
+            image_hash: hash hex d'une photo déjà uploadée (utiliser upload_image / upload_image_from_url). Sert de miniature si video_id est fourni.
+            video_id: identifiant d'une vidéo déjà uploadée (annonce vidéo). Prioritaire sur image_hash pour le format.
             countries: liste de codes pays ISO-2 (ex: ["MA", "FR"])
             age_min: âge minimum ciblé
             age_max: âge maximum ciblé
@@ -146,12 +151,16 @@ def build_meta_tools(
             )
 
         # ── Validations préalables ──────────────────────────────────────
-        if not image_hash or not _HEX_RE.match(image_hash.strip()):
+        # Un visuel est requis : soit une photo (image_hash hex), soit une vidéo
+        # (video_id numérique). image_hash sert alors de miniature optionnelle.
+        image_hash = (image_hash or "").strip()
+        video_id = (video_id or "").strip()
+        has_image = bool(image_hash and _HEX_RE.match(image_hash))
+        if not video_id and not has_image:
             return (
-                "❌ image_hash manquant ou invalide. Demande à l'utilisateur "
-                "un chemin d'image local (puis upload_image) ou une URL "
-                "publique (puis upload_image_from_url), puis réessaie avec "
-                "le hash retourné."
+                "❌ Visuel manquant : il faut une photo (image_hash) ou une vidéo "
+                "(video_id). Demande à l'utilisateur un chemin/URL d'image (puis "
+                "upload_image / upload_image_from_url) ou une vidéo, puis réessaie."
             )
         allowed = COMPATIBLE_GOALS.get(objective)
         if allowed and optimization_goal not in allowed:
@@ -234,18 +243,43 @@ def build_meta_tools(
             _rollback_campaign(campaign["id"])
             return _fmt_fb_error(e, "la création de l'ad set")
 
+        # Annonce VIDÉO : object_story_spec.video_data. Meta exige une miniature
+        # (image_hash fourni, ou récupérée auto sur la vidéo une fois traitée).
+        if video_id:
+            thumb_hash = image_hash if has_image else None
+            thumb_url = None
+            if not thumb_hash:
+                thumb_url, vid_err = _wait_video_thumbnail(video_id, access_token)
+                if not thumb_url:
+                    _rollback_campaign(campaign["id"])
+                    return (
+                        "❌ La vidéo est encore en cours de traitement par Meta "
+                        f"({vid_err or 'miniature indisponible'}). Réessaie dans "
+                        "une minute, ou fournis une photo comme miniature."
+                    )
+            video_data: dict[str, Any] = {"video_id": video_id, "message": ad_message}
+            if thumb_hash:
+                video_data["image_hash"] = thumb_hash
+            elif thumb_url:
+                video_data["image_url"] = thumb_url
+            if link:
+                video_data["call_to_action"] = {"type": cta, "value": {"link": link}}
+            story_spec = {"page_id": page_id, "video_data": video_data}
+        else:
+            story_spec = {
+                "page_id": page_id,
+                "link_data": {
+                    "message": ad_message,
+                    "link": link,
+                    "image_hash": image_hash,
+                },
+            }
+
         try:
             creative = account.create_ad_creative(
                 params={
                     "name": f"{campaign_name} - Creative",
-                    "object_story_spec": {
-                        "page_id": page_id,
-                        "link_data": {
-                            "message": ad_message,
-                            "link": link,
-                            "image_hash": image_hash,
-                        },
-                    },
+                    "object_story_spec": story_spec,
                 }
             )
         except FacebookRequestError as e:
@@ -1210,3 +1244,66 @@ def upload_image_bytes(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+def upload_video_bytes(
+    access_token: str,
+    ad_account_id: str,
+    data: bytes,
+    filename: str = "video.mp4",
+) -> tuple[Optional[str], Optional[str]]:
+    """Upload des octets vidéo vers le compte publicitaire (/advideos).
+    Retourne (video_id, error). La vidéo est ensuite traitée de façon async par Meta."""
+    try:
+        url = f"{meta_pages.GRAPH}/{ad_account_id}/advideos"
+        resp = requests.post(
+            url,
+            data={"access_token": access_token},
+            files={"source": (filename or "video.mp4", BytesIO(data))},
+            timeout=180,
+        )
+        body = resp.json()
+        if isinstance(body, dict) and body.get("error"):
+            return None, body["error"].get("message", "Erreur Meta lors de l'upload vidéo")
+        video_id = body.get("id") if isinstance(body, dict) else None
+        if not video_id:
+            return None, "Réponse Meta invalide (aucun video_id)."
+        return str(video_id), None
+    except Exception as e:
+        return None, f"Erreur lors de l'upload de la vidéo : {e}"
+
+
+def _wait_video_thumbnail(
+    video_id: str, access_token: str, max_wait: int = 30
+) -> tuple[Optional[str], Optional[str]]:
+    """Attend que la vidéo soit traitée puis renvoie l'URI de sa miniature
+    préférée. Retourne (thumbnail_url, error). Best-effort, borné par max_wait."""
+    import time
+
+    deadline = time.time() + max_wait
+    last_status: Optional[str] = None
+    try:
+        while time.time() < deadline:
+            r = requests.get(
+                f"{meta_pages.GRAPH}/{video_id}",
+                params={"fields": "status", "access_token": access_token},
+                timeout=15,
+            ).json()
+            last_status = ((r.get("status") or {}).get("video_status")) if isinstance(r, dict) else None
+            if last_status == "ready":
+                break
+            if last_status == "error":
+                return None, "traitement vidéo en erreur"
+            time.sleep(2)
+        t = requests.get(
+            f"{meta_pages.GRAPH}/{video_id}/thumbnails",
+            params={"access_token": access_token},
+            timeout=15,
+        ).json()
+        thumbs = t.get("data", []) if isinstance(t, dict) else []
+        if not thumbs:
+            return None, f"miniature non prête (statut: {last_status or 'inconnu'})"
+        preferred = next((x for x in thumbs if x.get("is_preferred")), thumbs[0])
+        return preferred.get("uri"), None
+    except Exception as e:
+        return None, f"{e}"

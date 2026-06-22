@@ -1,17 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
-import { Lock, ChevronDown, ExternalLink, Image as ImageIcon, Link2 } from "lucide-react";
-import type { PagePost } from "../lib/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Lock, ChevronDown, ExternalLink, Image as ImageIcon, Link2, X, ImagePlus, Send, Loader2, PenSquare, ZoomIn } from "lucide-react";
+import { api, ApiError, type PagePost } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import { fmtNum, fmtDateTimeFull } from "../lib/format";
 import { Card, KPICard, Placeholder, SectionTitle, LoadingOverlay, type Kpi } from "../components/ms/primitives";
 import { ConnectPrompt } from "../components/shared/states";
 import { usePageData } from "../hooks/useMetaData";
 import { useAccount } from "../providers/AccountProvider";
+import { useToast } from "../providers/ToastProvider";
 
 type PostSortKey = "date" | "engagement" | "reactions" | "comments" | "shares";
 
 export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => void }) {
   const { data } = usePageData();
   const { selectedAccountId } = useAccount();
+  const toast = useToast();
+  const qc = useQueryClient();
+
+  // Lightbox : image agrandie au clic sur une vignette de post.
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  // Composer : modal de publication d'un nouveau post.
+  const [composerOpen, setComposerOpen] = useState(false);
 
   const engagementReason = data?.summary?.engagement_blocked_reason;
   const apiErrorMsg = data?.apiError ?? null;
@@ -102,6 +112,9 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
               {info?.link && <a href={info.link} target="_blank" rel="noreferrer" style={{ fontSize: 13.5, color: "#1877F2", display: "inline-flex", alignItems: "center", gap: 5 }}>View page <ExternalLink size={12} /></a>}
             </div>
           </div>
+          <button onClick={() => setComposerOpen(true)} className="ms-btn-primary" style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", borderRadius: 10, border: "none", background: "#1877F2", color: "#fff", fontSize: 13.5, fontWeight: 600, cursor: "pointer", boxShadow: "0 8px 24px rgba(24,119,242,.35)" }}>
+            <PenSquare size={16} /> Publier un post
+          </button>
         </div>
       </div>
 
@@ -127,8 +140,13 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
               return (
                 <div key={p.id} className="ms-fade-up" style={{ animationDelay: `${i * 70}ms`, background: "#0E1015", border: "1px solid #1E2128", borderRadius: 10, overflow: "hidden", display: "flex", flexDirection: "column" }}>
                   <div style={{ position: "relative" }}>
-                    {p.full_picture ? <img src={p.full_picture} alt="" style={{ width: "100%", height: 120, objectFit: "cover" }} /> : <Placeholder height={120} radius={0} />}
-                    <span style={{ position: "absolute", top: 8, left: 8, background: "#1877F2", color: "#fff", fontSize: 11, fontWeight: 700, fontFamily: "JetBrains Mono", borderRadius: 6, padding: "2px 7px" }}>#{i + 1}</span>
+                    {p.full_picture ? (
+                      <button onClick={() => setLightbox(p.full_picture!)} title="Agrandir l'image" className="ms-thumb" style={{ display: "block", width: "100%", height: 120, padding: 0, border: "none", cursor: "zoom-in", background: "none", position: "relative" }}>
+                        <img src={p.full_picture} alt="" style={{ width: "100%", height: 120, objectFit: "cover", display: "block" }} />
+                        <span className="ms-thumb-zoom" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(6,13,31,.45)", color: "#fff", opacity: 0, transition: "opacity 160ms ease" }}><ZoomIn size={22} /></span>
+                      </button>
+                    ) : <Placeholder height={120} radius={0} />}
+                    <span style={{ position: "absolute", top: 8, left: 8, background: "#1877F2", color: "#fff", fontSize: 11, fontWeight: 700, fontFamily: "JetBrains Mono", borderRadius: 6, padding: "2px 7px", pointerEvents: "none" }}>#{i + 1}</span>
                   </div>
                   <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
                     <div style={{ fontSize: 12.5, color: "#D1D5DB", lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{p.message || "(sans texte)"}</div>
@@ -177,7 +195,7 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
                 const eng = p.reactions + p.comments + p.shares;
                 return (
                   <div key={p.id} className="ms-trow" style={{ display: "grid", gridTemplateColumns: POST_GRID, gap: 10, alignItems: "center", padding: "12px 20px", borderBottom: i < sortedPosts.length - 1 ? "1px solid #15181E" : "none" }}>
-                    {p.full_picture ? <img src={p.full_picture} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover" }} /> : <Placeholder w={40} height={40} />}
+                    {p.full_picture ? <img src={p.full_picture} alt="" onClick={() => setLightbox(p.full_picture!)} title="Agrandir l'image" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover", cursor: "zoom-in" }} /> : <Placeholder w={40} height={40} />}
                     <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                       <span style={{ color: p.permalink_url ? "#1877F2" : "#6B7280", display: "inline-flex", flexShrink: 0 }}>{p.full_picture ? <ImageIcon size={15} /> : <Link2 size={15} />}</span>
                       <span style={{ fontSize: 13.5, color: "#F9FAFB", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.message || "(no text)"}</span>
@@ -192,6 +210,100 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
           );
         })()}
       </Card>
+
+      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+      {composerOpen && (
+        <PostComposer
+          accountId={selectedAccountId}
+          pageName={info?.name || "votre page"}
+          onClose={() => setComposerOpen(false)}
+          onPublished={() => {
+            qc.invalidateQueries({ queryKey: qk.page(selectedAccountId) });
+            toast("Post publié", { kind: "success", msg: "Il apparaîtra sur ta page sous peu." });
+            setComposerOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Image agrandie plein écran — clic sur l'arrière-plan ou Échap pour fermer.
+function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div onClick={onClose} className="ms-fade-up" style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(6,13,31,.85)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 32, cursor: "zoom-out" }}>
+      <button onClick={onClose} title="Fermer" style={{ position: "absolute", top: 20, right: 20, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 999, border: "1px solid #2A2F3A", background: "#16181F", color: "#E2E8F0", cursor: "pointer" }}><X size={20} /></button>
+      <img src={src} alt="" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 12, boxShadow: "0 24px 80px rgba(0,0,0,.6)", cursor: "default" }} />
+    </div>
+  );
+}
+
+// Modal de publication d'un post (texte + image optionnelle).
+function PostComposer({ accountId, pageName, onClose, onPublished }: {
+  accountId: string | null;
+  pageName: string;
+  onClose: () => void;
+  onPublished: () => void;
+}) {
+  const [message, setMessage] = useState("");
+  const [image, setImage] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: () => api.createPagePost({ message, image }, accountId),
+    onSuccess: onPublished,
+  });
+  const errMsg = mutation.error instanceof ApiError ? mutation.error.message
+    : mutation.error ? "La publication a échoué. Réessaie." : null;
+
+  const pickImage = (f: File | null) => {
+    setImage(f);
+    setPreview((prev) => { if (prev) URL.revokeObjectURL(prev); return f ? URL.createObjectURL(f) : null; });
+  };
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
+
+  const canSubmit = (message.trim().length > 0 || !!image) && !mutation.isPending;
+
+  return (
+    <div onClick={() => !mutation.isPending && onClose()} className="ms-fade-up" style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(6,13,31,.78)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 520, background: "#0E1015", border: "1px solid #1E2128", borderRadius: 14, boxShadow: "0 24px 80px rgba(0,0,0,.6)", overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid #1E2128" }}>
+          <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 16, color: "#F9FAFB" }}>Publier sur {pageName}</div>
+          <button onClick={onClose} disabled={mutation.isPending} style={{ display: "inline-flex", background: "none", border: "none", color: "#6B7280", cursor: mutation.isPending ? "default" : "pointer" }}><X size={18} /></button>
+        </div>
+        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="Qu'avez-vous en tête ?"
+            rows={5}
+            autoFocus
+            style={{ width: "100%", resize: "vertical", background: "#070F1E", border: "1px solid #1E2128", borderRadius: 10, padding: "12px 14px", color: "#E2E8F0", fontSize: 14, fontFamily: "IBM Plex Sans", lineHeight: 1.5, outline: "none" }}
+          />
+          {preview && (
+            <div style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid #1E2128" }}>
+              <img src={preview} alt="" style={{ width: "100%", maxHeight: 240, objectFit: "cover", display: "block" }} />
+              <button onClick={() => pickImage(null)} title="Retirer l'image" style={{ position: "absolute", top: 8, right: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 999, border: "none", background: "rgba(6,13,31,.7)", color: "#fff", cursor: "pointer" }}><X size={16} /></button>
+            </div>
+          )}
+          {errMsg && <div style={{ fontSize: 12.5, color: "#FCA5A5", background: "#F43F5E12", border: "1px solid #F43F5E30", borderRadius: 8, padding: "9px 12px" }}>{errMsg}</div>}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, color: "#CBD5E1", cursor: "pointer" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 8, border: "1px solid #1E2128", background: "#070F1E", color: "#1877F2" }}><ImagePlus size={18} /></span>
+              {image ? "Changer l'image" : "Ajouter une image"}
+              <input type="file" accept="image/*" onChange={(e) => pickImage(e.target.files?.[0] || null)} style={{ display: "none" }} />
+            </label>
+            <button onClick={() => mutation.mutate()} disabled={!canSubmit} style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 18px", borderRadius: 10, border: "none", background: canSubmit ? "#1877F2" : "#1E2128", color: canSubmit ? "#fff" : "#6B7280", fontSize: 13.5, fontWeight: 600, cursor: canSubmit ? "pointer" : "default" }}>
+              {mutation.isPending ? <><Loader2 size={16} className="animate-spin" /> Publication…</> : <><Send size={16} /> Publier</>}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

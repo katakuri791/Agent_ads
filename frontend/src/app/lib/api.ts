@@ -19,9 +19,9 @@ const REQUEST_TIMEOUT_MS = 45_000;
 /** `fetch` avec timeout (AbortController) et erreurs réseau converties en
  *  ApiError lisibles — au lieu des « Failed to fetch » / « Erreur inconnue »
  *  bruts qui ne disent rien à l'utilisateur. */
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (e: unknown) {
@@ -64,11 +64,11 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-async function requestForm<T>(path: string, form: FormData): Promise<T> {
+async function requestForm<T>(path: string, form: FormData, timeoutMs?: number): Promise<T> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: "POST", body: form, headers });
+  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: "POST", body: form, headers }, timeoutMs);
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -314,6 +314,7 @@ export interface CampaignBriefStructured {
   link?: string | null;
   image_prompt?: string | null;
   image_hash?: string | null;
+  video_id?: string | null;
   estimated_reach?: string | null;
   notes?: string | null;
 }
@@ -325,7 +326,34 @@ export interface InsightAnswerStructured {
   recommendations: string[];
 }
 
-export type StructuredOutput = CampaignBriefStructured | InsightAnswerStructured;
+export interface QuestionOptionT {
+  value: string;
+  label: string;
+  hint?: string | null;
+}
+
+export interface QuestionT {
+  id: string;
+  label: string;
+  type: "single" | "multi" | "text";
+  options: QuestionOptionT[];
+  allow_custom: boolean;
+  placeholder?: string | null;
+  required: boolean;
+}
+
+export interface CampaignQuestionnaireStructured {
+  kind: "campaign_questionnaire";
+  title: string;
+  intro?: string | null;
+  questions: QuestionT[];
+  submit_label: string;
+}
+
+export type StructuredOutput =
+  | CampaignBriefStructured
+  | InsightAnswerStructured
+  | CampaignQuestionnaireStructured;
 
 export interface ChatResponseT {
   conversation_id: string;
@@ -456,6 +484,21 @@ export const api = {
   getPageSummary: (accountId?: string | null) =>
     request<PageSummary>(`/meta/page-summary?_=1${acctParam(accountId)}`),
 
+  /** Publie un post sur la page Facebook (texte, lien et/ou image). */
+  createPagePost: (
+    body: { message?: string; link?: string; image?: File | null },
+    accountId?: string | null,
+  ) => {
+    const form = new FormData();
+    form.append("message", body.message || "");
+    if (body.link) form.append("link", body.link);
+    if (body.image) form.append("image", body.image);
+    return requestForm<{ ok: boolean; post_id?: string | null }>(
+      `/meta/page-posts?_=1${acctParam(accountId)}`,
+      form,
+    );
+  },
+
   // `section` charge un seul onglet du panneau de détail (adsets|ads|demographics|
   // placements) → ~2 appels Meta au lieu de 6. Les autres clés reviennent vides.
   getCampaignDetail: (
@@ -507,6 +550,17 @@ export const api = {
     );
   },
 
+  uploadChatVideo: (file: File, accountId?: string | null) => {
+    const form = new FormData();
+    form.append("file", file);
+    // Vidéo = upload plus lourd que les autres requêtes → timeout étendu (3 min).
+    return requestForm<{ video_id: string; error?: string }>(
+      `/chat/upload-video?_=1${acctParam(accountId)}`,
+      form,
+      180_000,
+    );
+  },
+
   listConversations: () =>
     request<Array<{ id: string; title: string | null; created_at: string; updated_at: string | null }>>(
       "/conversations",
@@ -522,6 +576,10 @@ export const api = {
     request<Array<{ id: string; role: string; content: string; created_at: string; metadata: Record<string, unknown> }>>(
       `/conversations/${conversationId}/messages`,
     ),
+
+  // QCM de création de campagne (déterministe, généré côté backend en JSON).
+  getCampaignQuestionnaire: () =>
+    request<CampaignQuestionnaireStructured>("/chat/campaign-questionnaire"),
 
   chat: (message: string, conversationId?: string, attachedImageHash?: string | null, accountId?: string | null) =>
     request<ChatResponseT>("/chat", {

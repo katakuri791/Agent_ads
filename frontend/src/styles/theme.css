@@ -223,6 +223,11 @@
 .ms-trow:hover { background: #1877F208 !important; }
 select.ms-select option { background: #16181F; }
 
+/* vignette de post : voile + loupe au survol, image légèrement zoomée */
+.ms-thumb img { transition: transform .2s cubic-bezier(.4,0,.2,1); }
+.ms-thumb:hover img { transform: scale(1.05); }
+.ms-thumb:hover .ms-thumb-zoom { opacity: 1 !important; }
+
 /* message entrance */
 .ms-msg { animation: msMsg 280ms ease; }
 @keyframes msMsg { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
