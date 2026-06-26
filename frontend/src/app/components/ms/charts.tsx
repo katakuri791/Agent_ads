@@ -11,7 +11,7 @@ export interface AgeGender {
 }
 
 // ─── Sparkline ──────────────────────────────────────────────────
-export function Sparkline({ data, color = "#1877F2", height = 40, fill = true }: {
+export function Sparkline({ data, color = "var(--accent)", height = 40, fill = true }: {
   data: number[]; color?: string; height?: number; fill?: boolean;
 }) {
   const w = 200, pad = 2;
@@ -57,7 +57,7 @@ export function LineChart({ series, height = 300 }: { series: LinePoint[]; heigh
   useEffect(() => { setDrawn(false); const t = setTimeout(() => setDrawn(true), 30); return () => clearTimeout(t); }, [series]);
 
   if (!series || series.length === 0) {
-    return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#6B7280", fontSize: 13 }}>No data for this period.</div>;
+    return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontSize: 13 }}>No data for this period.</div>;
   }
 
   const padL = 52, padR = 52, padT = 16, padB = 28;
@@ -70,6 +70,9 @@ export function LineChart({ series, height = 300 }: { series: LinePoint[]; heigh
   const lineFrom = (vals: number[], yf: (v: number) => number) =>
     vals.map((v, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + yf(v).toFixed(1)).join(" ");
   const spendPath = lineFrom(spend, ys), imprPath = lineFrom(impr, yi);
+  const baseY = padT + ih;
+  const areaFrom = (path: string) => `${path} L${x(series.length - 1).toFixed(1)} ${baseY} L${x(0).toFixed(1)} ${baseY} Z`;
+  const spendArea = areaFrom(spendPath), imprArea = areaFrom(imprPath);
   const grid = [0, 0.25, 0.5, 0.75, 1];
   const fmtDate = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
@@ -84,23 +87,35 @@ export function LineChart({ series, height = 300 }: { series: LinePoint[]; heigh
   return (
     <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
       <svg width="100%" height={height} viewBox={`0 0 ${w} ${height}`} onMouseMove={move} onMouseLeave={() => setHover(null)} style={{ display: "block", overflow: "visible" }}>
-        <g>{grid.map((g, i) => <line key={i} x1={padL} x2={w - padR} y1={padT + ih * g} y2={padT + ih * g} stroke="#1E2128" strokeWidth={1} />)}</g>
-        <g>{grid.map((g, i) => <text key={i} x={padL - 10} y={padT + ih * g + 4} textAnchor="end" fontSize={10} fill="#6B7280" fontFamily="JetBrains Mono, monospace">{fmtMoney(sMax * (1 - g))}</text>)}</g>
-        <g>{grid.map((g, i) => <text key={i} x={w - padR + 10} y={padT + ih * g + 4} textAnchor="start" fontSize={10} fill="#6B7280" fontFamily="JetBrains Mono, monospace">{fmtNum(iMax * (1 - g))}</text>)}</g>
+        <defs>
+          <linearGradient id="lcSpend" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.20} />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="lcImpr" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#22C55E" stopOpacity={0.14} />
+            <stop offset="100%" stopColor="#22C55E" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <g>{grid.map((g, i) => <line key={i} x1={padL} x2={w - padR} y1={padT + ih * g} y2={padT + ih * g} stroke="var(--bd)" strokeWidth={1} />)}</g>
+        <path d={imprArea} fill="url(#lcImpr)" style={{ opacity: drawn ? 1 : 0, transition: "opacity 800ms ease 200ms" }} />
+        <path d={spendArea} fill="url(#lcSpend)" style={{ opacity: drawn ? 1 : 0, transition: "opacity 800ms ease 280ms" }} />
+        <g>{grid.map((g, i) => <text key={i} x={padL - 10} y={padT + ih * g + 4} textAnchor="end" fontSize={10} fill="var(--tx-dim)" fontFamily="JetBrains Mono, monospace">{fmtMoney(sMax * (1 - g))}</text>)}</g>
+        <g>{grid.map((g, i) => <text key={i} x={w - padR + 10} y={padT + ih * g + 4} textAnchor="start" fontSize={10} fill="var(--tx-dim)" fontFamily="JetBrains Mono, monospace">{fmtNum(iMax * (1 - g))}</text>)}</g>
         <path d={imprPath} fill="none" stroke="#22C55E" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={4000} strokeDashoffset={drawn ? 0 : 4000} style={{ transition: "stroke-dashoffset 700ms ease" }} />
-        <path d={spendPath} fill="none" stroke="#1877F2" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={4000} strokeDashoffset={drawn ? 0 : 4000} style={{ transition: "stroke-dashoffset 700ms ease 80ms" }} />
+        <path d={spendPath} fill="none" stroke="var(--accent)" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={4000} strokeDashoffset={drawn ? 0 : 4000} style={{ transition: "stroke-dashoffset 700ms ease 80ms" }} />
         {hover != null && <line x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + ih} stroke="#3A3F4B" strokeWidth={1} />}
-        {hover != null && <circle cx={x(hover)} cy={ys(spend[hover])} r={4} fill="#1877F2" stroke="#0A0C10" strokeWidth={2} />}
-        {hover != null && <circle cx={x(hover)} cy={yi(impr[hover])} r={4} fill="#22C55E" stroke="#0A0C10" strokeWidth={2} />}
+        {hover != null && <circle cx={x(hover)} cy={ys(spend[hover])} r={4} fill="var(--accent)" stroke="var(--bg)" strokeWidth={2} />}
+        {hover != null && <circle cx={x(hover)} cy={yi(impr[hover])} r={4} fill="#22C55E" stroke="var(--bg)" strokeWidth={2} />}
         <g>{[0, Math.floor(series.length / 2), series.length - 1].map((i, k) => (
-          <text key={k} x={x(i)} y={height - 8} textAnchor={k === 0 ? "start" : k === 2 ? "end" : "middle"} fontSize={10} fill="#6B7280">{fmtDate(series[i].date)}</text>
+          <text key={k} x={x(i)} y={height - 8} textAnchor={k === 0 ? "start" : k === 2 ? "end" : "middle"} fontSize={10} fill="var(--tx-dim)">{fmtDate(series[i].date)}</text>
         ))}</g>
       </svg>
       {hover != null && (
-        <div style={{ position: "absolute", left: Math.min(w - 170, Math.max(0, x(hover) - 80)), top: 4, width: 160, background: "#16181F", border: "1px solid #1E2128", borderRadius: 8, padding: "8px 10px", pointerEvents: "none", boxShadow: "0 10px 30px rgba(0,0,0,.5)", fontSize: 12 }}>
-          <div style={{ color: "#6B7280", fontSize: 11, marginBottom: 4 }}>{fmtDate(series[hover].date)}</div>
-          <div style={{ display: "flex", justifyContent: "space-between", color: "#D1D5DB" }}><span>● Spend</span><span style={{ fontFamily: "JetBrains Mono", color: "#1877F2" }}>{fmtMoney(spend[hover])}</span></div>
-          <div style={{ display: "flex", justifyContent: "space-between", color: "#D1D5DB" }}><span>● Impr.</span><span style={{ fontFamily: "JetBrains Mono", color: "#22C55E" }}>{fmtNum(impr[hover])}</span></div>
+        <div style={{ position: "absolute", left: Math.min(w - 170, Math.max(0, x(hover) - 80)), top: 4, width: 160, background: "var(--surf-pop)", border: "1px solid var(--bd)", borderRadius: 8, padding: "8px 10px", pointerEvents: "none", boxShadow: "0 10px 30px rgba(0,0,0,.5)", fontSize: 12 }}>
+          <div style={{ color: "var(--tx-dim)", fontSize: 11, marginBottom: 4 }}>{fmtDate(series[hover].date)}</div>
+          <div style={{ display: "flex", justifyContent: "space-between", color: "var(--tx-2)" }}><span>● Spend</span><span style={{ fontFamily: "JetBrains Mono", color: "var(--accent)" }}>{fmtMoney(spend[hover])}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", color: "var(--tx-2)" }}><span>● Impr.</span><span style={{ fontFamily: "JetBrains Mono", color: "#22C55E" }}>{fmtNum(impr[hover])}</span></div>
         </div>
       )}
     </div>
@@ -136,15 +151,15 @@ export function DonutChart({ data, size = 200, thickness = 26 }: { data: DonutDa
         ))}
       </svg>
       <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-        <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 26, color: "#F9FAFB" }}>{active != null ? Math.round(segs[active].frac * 100) + "%" : fmtNum(total)}</div>
-        <div style={{ fontSize: 11, color: "#6B7280", letterSpacing: ".04em", marginTop: 2 }}>{active != null ? segs[active].label : "TOTAL"}</div>
+        <div style={{ fontFamily: "JetBrains Mono, monospace", fontWeight: 700, fontSize: 24, letterSpacing: "-.02em", fontVariantNumeric: "tabular-nums", color: "var(--tx)" }}>{active != null ? Math.round(segs[active].frac * 100) + "%" : fmtNum(total)}</div>
+        <div style={{ fontSize: 11, color: "var(--tx-dim)", letterSpacing: ".04em", marginTop: 2 }}>{active != null ? segs[active].label : "TOTAL"}</div>
       </div>
     </div>
   );
 }
 
 // ─── BarChart (vertical) ────────────────────────────────────────
-export function BarChart({ data, height = 180, color = "#1877F2" }: { data: Array<{ name: string; value: number }>; height?: number; color?: string }) {
+export function BarChart({ data, height = 180, color = "var(--accent)" }: { data: Array<{ name: string; value: number }>; height?: number; color?: string }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { const t = setTimeout(() => setMounted(true), 40); return () => clearTimeout(t); }, []);
   const max = Math.max(...data.map((d) => d.value)) || 1;
@@ -152,9 +167,9 @@ export function BarChart({ data, height = 180, color = "#1877F2" }: { data: Arra
     <div style={{ display: "flex", alignItems: "flex-end", gap: 14, height, paddingTop: 8 }}>
       {data.map((d, i) => (
         <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", height: "100%", justifyContent: "flex-end" }}>
-          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "#D1D5DB", marginBottom: 6 }}>{d.value}%</div>
+          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)", marginBottom: 6 }}>{d.value}%</div>
           <div style={{ width: "100%", maxWidth: 44, borderRadius: "4px 4px 0 0", background: color, height: mounted ? (d.value / max) * (height - 56) : 0, transition: `height 600ms cubic-bezier(.4,0,.2,1) ${i * 50}ms` }} />
-          <div style={{ fontSize: 10, color: "#6B7280", marginTop: 8, textAlign: "center", lineHeight: 1.2 }}>{d.name}</div>
+          <div style={{ fontSize: 10, color: "var(--tx-dim)", marginTop: 8, textAlign: "center", lineHeight: 1.2 }}>{d.name}</div>
         </div>
       ))}
     </div>
@@ -162,19 +177,19 @@ export function BarChart({ data, height = 180, color = "#1877F2" }: { data: Arra
 }
 
 // ─── GroupedBar (age/gender, horizontal) ────────────────────────
-export function GroupedBar({ data, maleColor = "#1877F2", femaleColor = "#EC4899" }: { data: AgeGender[]; maleColor?: string; femaleColor?: string }) {
+export function GroupedBar({ data, maleColor = "var(--accent)", femaleColor = "#EC4899" }: { data: AgeGender[]; maleColor?: string; femaleColor?: string }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { const t = setTimeout(() => setMounted(true), 40); return () => clearTimeout(t); }, []);
   const max = Math.max(...data.flatMap((d) => [d.male, d.female])) || 1;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#6B7280", marginBottom: 2 }}>
+      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--tx-dim)", marginBottom: 2 }}>
         <span><span style={{ color: maleColor }}>● </span>Male</span>
         <span><span style={{ color: femaleColor }}>● </span>Female</span>
       </div>
       {data.map((d, i) => (
         <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 44, fontSize: 11, color: "#6B7280", fontFamily: "JetBrains Mono" }}>{d.age}</div>
+          <div style={{ width: 44, fontSize: 11, color: "var(--tx-dim)", fontFamily: "JetBrains Mono" }}>{d.age}</div>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
             <div style={{ height: 9, borderRadius: 3, background: maleColor, width: (mounted ? (d.male / max) * 100 : 0) + "%", transition: `width 600ms ease ${i * 40}ms` }} />
             <div style={{ height: 9, borderRadius: 3, background: femaleColor, width: (mounted ? (d.female / max) * 100 : 0) + "%", transition: `width 600ms ease ${i * 40 + 60}ms` }} />
@@ -192,8 +207,8 @@ export function StackedBar({ data, height = 220 }: { data: Array<{ organic: numb
   const max = Math.max(...data.map((d) => d.organic + d.paid)) || 1;
   return (
     <div>
-      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#6B7280", marginBottom: 12 }}>
-        <span><span style={{ color: "#1877F2" }}>● </span>Paid reach</span>
+      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--tx-dim)", marginBottom: 12 }}>
+        <span><span style={{ color: "var(--accent)" }}>● </span>Paid reach</span>
         <span><span style={{ color: "#22C55E" }}>● </span>Organic reach</span>
       </div>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height }}>
@@ -202,7 +217,7 @@ export function StackedBar({ data, height = 220 }: { data: Array<{ organic: numb
           const th = mounted ? (total / max) * height : 0;
           return (
             <div key={i} title={`Paid ${fmtNum(d.paid)} · Organic ${fmtNum(d.organic)}`} style={{ flex: 1, height: th, display: "flex", flexDirection: "column", borderRadius: "3px 3px 0 0", overflow: "hidden", transition: `height 600ms ease ${i * 12}ms`, cursor: "pointer" }}>
-              <div style={{ height: (d.paid / total) * 100 + "%", background: "#1877F2" }} />
+              <div style={{ height: (d.paid / total) * 100 + "%", background: "var(--accent)" }} />
               <div style={{ height: (d.organic / total) * 100 + "%", background: "#22C55E" }} />
             </div>
           );
@@ -226,14 +241,14 @@ export function FollowersChart({ data, height = 220 }: { data: number[]; height?
       <svg viewBox="0 0 100 100" width="100%" height={height} preserveAspectRatio="none" style={{ display: "block" }}>
         <defs>
           <linearGradient id="fgrow" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#1877F2" stopOpacity={0.28} />
-            <stop offset="100%" stopColor="#1877F2" stopOpacity={0} />
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.28} />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity={0} />
           </linearGradient>
         </defs>
         <path d={area} fill="url(#fgrow)" style={{ opacity: mounted ? 1 : 0, transition: "opacity .8s" }} />
-        <path d={line} fill="none" stroke="#1877F2" strokeWidth={1} vectorEffect="non-scaling-stroke" strokeDasharray={400} strokeDashoffset={mounted ? 0 : 400} style={{ transition: "stroke-dashoffset 900ms ease" }} />
+        <path d={line} fill="none" stroke="var(--accent)" strokeWidth={1} vectorEffect="non-scaling-stroke" strokeDasharray={400} strokeDashoffset={mounted ? 0 : 400} style={{ transition: "stroke-dashoffset 900ms ease" }} />
       </svg>
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 11, color: "#6B7280", fontFamily: "JetBrains Mono" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 11, color: "var(--tx-dim)", fontFamily: "JetBrains Mono" }}>
         <span>{fmtNum(data[0])}</span>
         <span style={{ color: "#22C55E" }}>+{fmtNum(data[data.length - 1] - data[0])}</span>
         <span>{fmtNum(data[data.length - 1])}</span>

@@ -36,11 +36,11 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
       <div style={{ width: 64, height: 64, borderRadius: 16, background: "#F59E0B12", border: "1px solid #F59E0B30", display: "flex", alignItems: "center", justifyContent: "center", color: "#F59E0B" }}>
         <AlertTriangle size={28} />
       </div>
-      <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "#F9FAFB" }}>Impossible de charger les données</div>
-      <div style={{ fontSize: 13, color: "#9AA1AC", maxWidth: 420, lineHeight: 1.5, fontFamily: "JetBrains Mono" }}>{message}</div>
+      <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)" }}>Impossible de charger les données</div>
+      <div style={{ fontSize: 13, color: "var(--tx-3)", maxWidth: 420, lineHeight: 1.5, fontFamily: "JetBrains Mono" }}>{message}</div>
       {onRetry && <div style={{ marginTop: 6 }}><MSButton variant="primary" icon={<RefreshCw size={15} />} onClick={onRetry}>Réessayer</MSButton></div>}
     </div>
   );
 }
 
-export const OBJ_COLORS = ["#1877F2", "#22C55E", "#F59E0B", "#A855F7", "#EC4899", "#06B6D4", "#EF4444"];
+export const OBJ_COLORS = ["var(--accent)", "#22C55E", "#F59E0B", "#A855F7", "#EC4899", "#06B6D4", "#EF4444"];

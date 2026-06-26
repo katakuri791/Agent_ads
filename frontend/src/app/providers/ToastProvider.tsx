@@ -9,17 +9,17 @@ export const useToast = () => useContext(ToastCtx);
 
 function ToastHost({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: number) => void }) {
   return (
-    <div style={{ position: "fixed", top: 18, right: 18, zIndex: 200, display: "flex", flexDirection: "column", gap: 10 }}>
+    <div style={{ position: "fixed", top: 18, right: 18, zIndex: 9999, display: "flex", flexDirection: "column", gap: 10, pointerEvents: "none" }}>
       {toasts.map((t) => {
-        const col = t.kind === "error" ? "#EF4444" : t.kind === "success" ? "#22C55E" : "#1877F2";
+        const col = t.kind === "error" ? "#EF4444" : t.kind === "success" ? "#22C55E" : "var(--accent)";
         return (
-          <div key={t.id} className="ms-msg" style={{ display: "flex", alignItems: "flex-start", gap: 10, width: 320, background: "#16181F", border: "1px solid " + col + "40", borderLeft: "3px solid " + col, borderRadius: 10, padding: "12px 14px", boxShadow: "0 14px 40px rgba(0,0,0,.5)" }}>
+          <div key={t.id} className="ms-msg" style={{ display: "flex", alignItems: "flex-start", gap: 10, width: 320, background: "var(--surf-pop)", border: "1px solid " + col + "40", borderLeft: "3px solid " + col, borderRadius: 10, padding: "12px 14px", boxShadow: "0 14px 40px rgba(0,0,0,.5)", pointerEvents: "auto" }}>
             <span style={{ color: col, display: "inline-flex", marginTop: 1 }}>{t.kind === "error" ? <AlertTriangle size={16} /> : <Check size={16} />}</span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#F9FAFB" }}>{t.title}</div>
-              {t.msg && <div style={{ fontSize: 12, color: "#9AA1AC", marginTop: 2 }}>{t.msg}</div>}
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--tx)" }}>{t.title}</div>
+              {t.msg && <div style={{ fontSize: 12, color: "var(--tx-3)", marginTop: 2 }}>{t.msg}</div>}
             </div>
-            <button onClick={() => dismiss(t.id)} style={{ background: "none", border: "none", color: "#6B7280", cursor: "pointer", display: "inline-flex" }}><X size={14} /></button>
+            <button onClick={() => dismiss(t.id)} style={{ background: "none", border: "none", color: "var(--tx-dim)", cursor: "pointer", display: "inline-flex" }}><X size={14} /></button>
           </div>
         );
       })}

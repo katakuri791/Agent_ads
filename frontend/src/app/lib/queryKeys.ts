@@ -20,6 +20,7 @@ export const qk = {
   audienceReach: (accountId: string | null, days: number | "all") =>
     ["audience-reach", accountId, days] as const,
   audiences: (accountId: string | null) => ["audiences", accountId] as const,
+  scheduledPosts: (accountId: string | null) => ["scheduled-posts", accountId] as const,
   conversations: ["conversations"] as const,
   messages: (id: string) => ["messages", id] as const,
 };

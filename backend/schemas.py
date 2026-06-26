@@ -163,7 +163,26 @@ class CampaignQuestionnaire(BaseModel):
     submit_label: str = "Générer le brief"
 
 
-StructuredOutput = Union[CampaignBrief, InsightAnswer, CampaignQuestionnaire]
+class CampaignCreated(BaseModel):
+    """Carte de confirmation affichée APRÈS création réelle d'une campagne.
+
+    Met en avant le statut PAUSED (garde-fou sécurité = argument de vente) :
+    aucune dépense tant que l'utilisateur n'active pas manuellement.
+    """
+
+    kind: Literal["campaign_created"] = "campaign_created"
+    campaign_id: str
+    adset_id: Optional[str] = None
+    ad_id: Optional[str] = None
+    name: str
+    objective: Optional[str] = None
+    daily_budget: Optional[float] = None  # en centimes (devise du compte)
+    status: str = "PAUSED"
+
+
+StructuredOutput = Union[
+    CampaignBrief, InsightAnswer, CampaignQuestionnaire, CampaignCreated
+]
 
 
 # ─── Chat ────────────────────────────────────────────────────────────────────
@@ -230,6 +249,10 @@ class CampaignSummary(BaseModel):
     is_roas: Optional[bool] = None
 
 
+class CampaignStatusUpdate(BaseModel):
+    status: Literal["ACTIVE", "PAUSED"]
+
+
 class DashboardSeriesPoint(BaseModel):
     date: str
     impressions: int = 0
@@ -237,6 +260,11 @@ class DashboardSeriesPoint(BaseModel):
     spend: float = 0.0
     clicks: int = 0
     ctr: float = 0.0
+    revenue: float = 0.0
+    profit: float = 0.0
+    cpc: float = 0.0
+    cpm: float = 0.0
+    roas: float = 0.0
 
 
 class DashboardKpi(BaseModel):
@@ -281,6 +309,24 @@ class PageSummaryResponse(BaseModel):
     # Raison Meta réelle quand l'engagement est indisponible (token de page non
     # résolu, scope manquant, token expiré…). None si l'engagement est bien chargé.
     engagement_blocked_reason: Optional[str] = None
+
+
+class ScheduledPost(BaseModel):
+    id: str
+    message: str = ""
+    type: str = "text"            # text | image | video | link | carousel
+    scheduled_time: Optional[str] = None  # ISO 8601 UTC
+    created_time: Optional[str] = None
+    permalink_url: Optional[str] = None
+    full_picture: Optional[str] = None
+    status: str = "scheduled"     # scheduled | published
+
+
+class ScheduledPostsResponse(BaseModel):
+    posts: list[ScheduledPost] = []
+    # Raison Meta réelle si la planification est indisponible (scope
+    # `pages_manage_posts` manquant, token de page non résolu…). None sinon.
+    blocked_reason: Optional[str] = None
 
 
 class CampaignDetailResponse(BaseModel):

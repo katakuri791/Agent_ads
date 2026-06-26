@@ -35,37 +35,37 @@ function AudienceDetail({ aud, onClose }: { aud: AudienceSummary | null; onClose
   ];
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ padding: "18px 22px", borderBottom: "1px solid #1E2128", flexShrink: 0 }}>
+      <div style={{ padding: "18px 22px", borderBottom: "1px solid var(--bd)", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
           <div>
-            <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "#F9FAFB", marginBottom: 8 }}>{aud.name}</div>
+            <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)", marginBottom: 8 }}>{aud.name}</div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}><StatusBadge status={aud.type} /><StatusBadge status={aud.status} dot /></div>
           </div>
-          <button onClick={onClose} className="ms-icon-btn" style={{ width: 32, height: 32, borderRadius: 8, background: "transparent", border: "1px solid #1E2128", color: "#9AA1AC", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><X size={16} /></button>
+          <button onClick={onClose} className="ms-icon-btn" style={{ width: 32, height: 32, borderRadius: 8, background: "transparent", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><X size={16} /></button>
         </div>
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22 }}>
-        <div style={{ background: "linear-gradient(135deg,#1877F215,#1877F205)", border: "1px solid #1877F230", borderRadius: 12, padding: 18 }}>
-          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "#6B7280", marginBottom: 6 }}>Taille estimée</div>
-          <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 28, color: "#F9FAFB" }}>{aud.size_low > 0 || aud.size_high > 0 ? `${fmtNum(aud.size_low)} – ${fmtNum(aud.size_high)}` : "Indisponible"}</div>
-          <div style={{ fontSize: 12.5, color: "#9AA1AC", marginTop: 4 }}>personnes (estimation Meta)</div>
+        <div style={{ background: "linear-gradient(135deg,color-mix(in srgb, var(--accent) 8%, transparent),color-mix(in srgb, var(--accent) 2%, transparent))", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)", borderRadius: 12, padding: 18 }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", marginBottom: 6 }}>Taille estimée</div>
+          <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 28, color: "var(--tx)" }}>{aud.size_low > 0 || aud.size_high > 0 ? `${fmtNum(aud.size_low)} – ${fmtNum(aud.size_high)}` : "Indisponible"}</div>
+          <div style={{ fontSize: 12.5, color: "var(--tx-3)", marginTop: 4 }}>personnes (estimation Meta)</div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           {meta.map((m, i) => (
-            <div key={i} style={{ background: "#111318", border: "1px solid #1E2128", borderRadius: 8, padding: "10px 12px" }}>
-              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", color: "#6B7280", marginBottom: 4 }}>{m[0]}</div>
-              <div style={{ fontSize: 13.5, color: "#F9FAFB", fontWeight: 500 }}>{m[1]}</div>
+            <div key={i} style={{ background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", marginBottom: 4 }}>{m[0]}</div>
+              <div style={{ fontSize: 13.5, color: "var(--tx)", fontWeight: 500 }}>{m[1]}</div>
             </div>
           ))}
         </div>
         {aud.description && (
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#F9FAFB", marginBottom: 8 }}>Description</div>
-            <div style={{ fontSize: 13, color: "#D1D5DB", lineHeight: 1.5 }}>{aud.description}</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--tx)", marginBottom: 8 }}>Description</div>
+            <div style={{ fontSize: 13, color: "var(--tx-2)", lineHeight: 1.5 }}>{aud.description}</div>
           </div>
         )}
-        <div style={{ display: "flex", gap: 9, padding: "11px 13px", borderRadius: 10, background: "#0E1015", border: "1px solid #1E2128", color: "#9AA1AC", fontSize: 12 }}>
-          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1, color: "#6B7280" }} />
+        <div style={{ display: "flex", gap: 9, padding: "11px 13px", borderRadius: 10, background: "var(--surf-2)", border: "1px solid var(--bd)", color: "var(--tx-3)", fontSize: 12 }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1, color: "var(--tx-dim)" }} />
           <span>La démographie et la géographie des membres d'une audience ne sont pas exposées par l'API Meta (confidentialité).</span>
         </div>
       </div>
@@ -73,7 +73,7 @@ function AudienceDetail({ aud, onClose }: { aud: AudienceSummary | null; onClose
   );
 }
 
-const GENDER_COLORS: Record<string, string> = { male: "#1877F2", female: "#EC4899", unknown: "#6B7280" };
+const GENDER_COLORS: Record<string, string> = { male: "var(--accent)", female: "#EC4899", unknown: "var(--tx-dim)" };
 const GENDER_LABELS: Record<string, string> = { male: "Hommes", female: "Femmes", unknown: "Inconnu" };
 
 export function AudiencesPage({ onGoToSettings }: { onGoToSettings: () => void }) {
@@ -136,28 +136,28 @@ export function AudiencesPage({ onGoToSettings }: { onGoToSettings: () => void }
             <LoadingOverlay delay={0} message="Chargement de l'audience touchée…" />
           </div>
         ) : !hasReach ? (
-          <div style={{ padding: 28, textAlign: "center", color: "#6B7280", fontSize: 13 }}>Aucune donnée d'audience touchée sur cette période (aucune campagne diffusée).</div>
+          <div style={{ padding: 28, textAlign: "center", color: "var(--tx-dim)", fontSize: 13 }}>Aucune donnée d'audience touchée sur cette période (aucune campagne diffusée).</div>
         ) : (
           <>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 18 }}>
-              <span style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 28, color: "#F9FAFB" }}>{fmtNum(reach!.reach_total)}</span>
-              <span style={{ fontSize: 13, color: "#9AA1AC" }}>personnes touchées {reachDays === "all" ? "sur toute la période" : `sur ${reachDays} jours`}</span>
+              <span style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 28, color: "var(--tx)" }}>{fmtNum(reach!.reach_total)}</span>
+              <span style={{ fontSize: 13, color: "var(--tx-3)" }}>personnes touchées {reachDays === "all" ? "sur toute la période" : `sur ${reachDays} jours`}</span>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 20 }}>
               <div>
-                <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 14 }}>Impressions par âge &amp; genre</div>
-                {reach!.demographics.length === 0 ? <div style={{ color: "#6B7280", fontSize: 12.5 }}>—</div> : <GroupedBar data={reach!.demographics} />}
+                <div style={{ fontSize: 12, color: "var(--tx-dim)", marginBottom: 14 }}>Impressions par âge &amp; genre</div>
+                {reach!.demographics.length === 0 ? <div style={{ color: "var(--tx-dim)", fontSize: 12.5 }}>—</div> : <GroupedBar data={reach!.demographics} />}
               </div>
               <div>
-                <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 14 }}>Répartition par genre</div>
-                {genderData.length === 0 ? <div style={{ color: "#6B7280", fontSize: 12.5 }}>—</div> : (
+                <div style={{ fontSize: 12, color: "var(--tx-dim)", marginBottom: 14 }}>Répartition par genre</div>
+                {genderData.length === 0 ? <div style={{ color: "var(--tx-dim)", fontSize: 12.5 }}>—</div> : (
                   <>
                     <DonutChart data={genderData} size={150} />
                     <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 14 }}>
                       {genderData.map((g, i) => (
                         <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12.5 }}>
-                          <span style={{ display: "flex", alignItems: "center", gap: 8, color: "#D1D5DB" }}><span style={{ width: 9, height: 9, borderRadius: 3, background: g.color }} />{g.label}</span>
-                          <span style={{ fontFamily: "JetBrains Mono", color: "#6B7280" }}>{g.value}%</span>
+                          <span style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--tx-2)" }}><span style={{ width: 9, height: 9, borderRadius: 3, background: g.color }} />{g.label}</span>
+                          <span style={{ fontFamily: "JetBrains Mono", color: "var(--tx-dim)" }}>{g.value}%</span>
                         </div>
                       ))}
                     </div>
@@ -167,11 +167,11 @@ export function AudiencesPage({ onGoToSettings }: { onGoToSettings: () => void }
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginTop: 22 }}>
               <div>
-                <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 10 }}>Part des impressions par placement</div>
-                {reach!.placements.length === 0 ? <div style={{ color: "#6B7280", fontSize: 12.5 }}>—</div> : <BarChart data={reach!.placements} height={200} />}
+                <div style={{ fontSize: 12, color: "var(--tx-dim)", marginBottom: 10 }}>Part des impressions par placement</div>
+                {reach!.placements.length === 0 ? <div style={{ color: "var(--tx-dim)", fontSize: 12.5 }}>—</div> : <BarChart data={reach!.placements} height={200} />}
               </div>
               <div>
-                <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 10 }}>Pays touchés</div>
+                <div style={{ fontSize: 12, color: "var(--tx-dim)", marginBottom: 10 }}>Pays touchés</div>
                 <WorldMap data={reach!.geo_breakdown || []} height={220} />
               </div>
             </div>
@@ -188,11 +188,11 @@ export function AudiencesPage({ onGoToSettings }: { onGoToSettings: () => void }
         </div>
       </div>
       <Card pad={0} style={{ overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: AUD_GRID, gap: 10, padding: "12px 18px", borderBottom: "1px solid #1E2128", background: "#0E1015" }}>
+        <div style={{ display: "grid", gridTemplateColumns: AUD_GRID, gap: 10, padding: "12px 18px", borderBottom: "1px solid var(--bd)", background: "var(--surf-2)" }}>
           {AUD_COLS.map((col) => (
-            <button key={col.k} onClick={() => clickSort(col.k)} className="ms-th" style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: col.align === "right" ? "flex-end" : "flex-start", background: "none", border: "none", cursor: "pointer", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: sort.k === col.k ? "#D1D5DB" : "#6B7280", fontFamily: "IBM Plex Sans", fontWeight: 500, padding: 0 }}>
+            <button key={col.k} onClick={() => clickSort(col.k)} className="ms-th" style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: col.align === "right" ? "flex-end" : "flex-start", background: "none", border: "none", cursor: "pointer", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: sort.k === col.k ? "var(--tx-2)" : "var(--tx-dim)", fontFamily: "IBM Plex Sans", fontWeight: 500, padding: 0 }}>
               <span>{col.label}</span>
-              <span style={{ display: "inline-flex", opacity: sort.k === col.k ? 1 : 0.35, color: sort.k === col.k ? "#1877F2" : "#6B7280" }}>{sort.k === col.k && sort.dir === 1 ? <ChevronDown size={12} style={{ transform: "rotate(180deg)" }} /> : <ChevronDown size={12} />}</span>
+              <span style={{ display: "inline-flex", opacity: sort.k === col.k ? 1 : 0.35, color: sort.k === col.k ? "var(--accent)" : "var(--tx-dim)" }}>{sort.k === col.k && sort.dir === 1 ? <ChevronDown size={12} style={{ transform: "rotate(180deg)" }} /> : <ChevronDown size={12} />}</span>
             </button>
           ))}
         </div>
@@ -200,24 +200,24 @@ export function AudiencesPage({ onGoToSettings }: { onGoToSettings: () => void }
           {!audQ.data
             ? <div style={{ position: "relative", minHeight: 220 }}><LoadingOverlay delay={0} message="Chargement des audiences…" /></div>
             : rows.length === 0
-            ? <div style={{ padding: 48, textAlign: "center", color: "#6B7280", fontSize: 13.5 }}>{audiences.length === 0 ? "Aucune audience sur ce compte." : `Aucun résultat pour « ${q} ».`}</div>
+            ? <div style={{ padding: 48, textAlign: "center", color: "var(--tx-dim)", fontSize: 13.5 }}>{audiences.length === 0 ? "Aucune audience sur ce compte." : `Aucun résultat pour « ${q} ».`}</div>
             : rows.map((a, i) => (
               <div key={a.id} className="ms-trow" onMouseEnter={() => setHoverRow(a.id)} onMouseLeave={() => setHoverRow(null)} onClick={() => setSelected(a)}
-                style={{ position: "relative", display: "grid", gridTemplateColumns: AUD_GRID, gap: 10, alignItems: "center", padding: "0 18px", height: 52, borderBottom: i < rows.length - 1 ? "1px solid #15181E" : "none", cursor: "pointer", transition: "background .12s" }}>
-                <span style={{ minWidth: 0, color: "#F9FAFB", fontWeight: 500, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                style={{ position: "relative", display: "grid", gridTemplateColumns: AUD_GRID, gap: 10, alignItems: "center", padding: "0 18px", height: 52, borderBottom: i < rows.length - 1 ? "1px solid var(--bd-weak)" : "none", cursor: "pointer", transition: "background .12s" }}>
+                <span style={{ minWidth: 0, color: "var(--tx)", fontWeight: 500, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
                 <span><StatusBadge status={a.type} /></span>
-                <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: "#D1D5DB" }}>{audSize(a)}</span>
-                <span style={{ textAlign: "right", fontSize: 12.5, color: "#9AA1AC" }}>{fmtDate(a.time_created)}</span>
-                <span style={{ textAlign: "right", fontSize: 12.5, color: "#9AA1AC" }}>{fmtDate(a.time_updated)}</span>
+                <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: "var(--tx-2)" }}>{audSize(a)}</span>
+                <span style={{ textAlign: "right", fontSize: 12.5, color: "var(--tx-3)" }}>{fmtDate(a.time_created)}</span>
+                <span style={{ textAlign: "right", fontSize: 12.5, color: "var(--tx-3)" }}>{fmtDate(a.time_updated)}</span>
                 <span><StatusBadge status={a.status} dot /></span>
                 {hoverRow === a.id && (
-                  <button onClick={(e) => { e.stopPropagation(); setSelected(a); }} className="ms-btn" style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 7, background: "#1877F2", color: "#fff", border: "none", fontSize: 12, fontWeight: 500, cursor: "pointer", fontFamily: "IBM Plex Sans", boxShadow: "0 2px 12px rgba(0,0,0,.4)" }}>Détails<ChevronRight size={13} /></button>
+                  <button onClick={(e) => { e.stopPropagation(); setSelected(a); }} className="ms-btn" style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 7, background: "var(--accent)", color: "#fff", border: "none", fontSize: 12, fontWeight: 500, cursor: "pointer", fontFamily: "IBM Plex Sans", boxShadow: "0 2px 12px rgba(0,0,0,.4)" }}>Détails<ChevronRight size={13} /></button>
                 )}
               </div>
             ))}
         </div>
       </Card>
-      <span style={{ fontSize: 12.5, color: "#6B7280" }}>{rows.length} audience(s)</span>
+      <span style={{ fontSize: 12.5, color: "var(--tx-dim)" }}>{rows.length} audience(s)</span>
       <SlidePanel open={!!selected} onClose={() => setSelected(null)}><AudienceDetail aud={selected} onClose={() => setSelected(null)} /></SlidePanel>
     </div>
   );

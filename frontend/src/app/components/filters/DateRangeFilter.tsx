@@ -53,31 +53,31 @@ export function DateRangeFilter() {
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button onClick={() => setOpen((o) => !o)} className="ms-btn"
-        style={{ display: "flex", alignItems: "center", gap: 8, height: 36, padding: "0 12px", borderRadius: 8, background: "#111318", border: "1px solid " + (open ? "#1877F2" : "#1E2128"), color: "#D1D5DB", fontSize: 13, fontFamily: "IBM Plex Sans", cursor: "pointer" }}>
-        <Calendar size={14} style={{ color: "#6B7280" }} />
+        style={{ display: "flex", alignItems: "center", gap: 8, height: 36, padding: "0 12px", borderRadius: 8, background: "var(--surf-card)", border: "1px solid " + (open ? "var(--accent)" : "var(--bd)"), color: "var(--tx-2)", fontSize: 13, fontFamily: "IBM Plex Sans", cursor: "pointer" }}>
+        <Calendar size={14} style={{ color: "var(--tx-dim)" }} />
         <span style={{ maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rangeLabel}</span>
-        <ChevronDown size={14} style={{ color: "#6B7280" }} />
+        <ChevronDown size={14} style={{ color: "var(--tx-dim)" }} />
       </button>
       {open && (
-        <div style={{ position: "absolute", top: 42, right: 0, width: 260, background: "#16181F", border: "1px solid #1E2128", borderRadius: 10, padding: 6, zIndex: 60, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }}>
+        <div style={{ position: "absolute", top: 42, right: 0, width: 260, background: "var(--surf-pop)", border: "1px solid var(--bd)", borderRadius: 10, padding: 6, zIndex: 60, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }}>
           {presets.map((p) => {
             const active = rangeLabel === p.label;
             return (
               <button key={p.label} className="ms-menu-item" onClick={() => { setRange(p.range, p.label); setOpen(false); }}
-                style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", fontSize: 12.5, color: active ? "#F9FAFB" : "#D1D5DB", background: active ? "#1877F215" : "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "IBM Plex Sans" }}>
+                style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", fontSize: 12.5, color: active ? "var(--tx)" : "var(--tx-2)", background: active ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "IBM Plex Sans" }}>
                 {p.label}
               </button>
             );
           })}
-          <div style={{ borderTop: "1px solid #1E2128", margin: "6px 4px", paddingTop: 8 }}>
-            <div style={{ fontSize: 11, color: "#6B7280", padding: "0 6px 6px" }}>Personnalisé</div>
+          <div style={{ borderTop: "1px solid var(--bd)", margin: "6px 4px", paddingTop: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--tx-dim)", padding: "0 6px 6px" }}>Personnalisé</div>
             <div style={{ display: "flex", gap: 6, padding: "0 6px" }}>
               <input type="date" value={customSince} onChange={(e) => setCustomSince(e.target.value)} style={dateInput} />
               <input type="date" value={customUntil} onChange={(e) => setCustomUntil(e.target.value)} style={dateInput} />
             </div>
             <div style={{ padding: "8px 6px 2px" }}>
               <button onClick={applyCustom} disabled={!customSince || !customUntil}
-                style={{ width: "100%", height: 32, borderRadius: 7, border: "none", background: customSince && customUntil ? "#1877F2" : "#2A2E37", color: "#fff", fontSize: 12.5, fontWeight: 500, cursor: customSince && customUntil ? "pointer" : "default", fontFamily: "IBM Plex Sans" }}>
+                style={{ width: "100%", height: 32, borderRadius: 7, border: "none", background: customSince && customUntil ? "var(--accent)" : "var(--sw)", color: "#fff", fontSize: 12.5, fontWeight: 500, cursor: customSince && customUntil ? "pointer" : "default", fontFamily: "IBM Plex Sans" }}>
                 Appliquer
               </button>
             </div>
@@ -89,6 +89,6 @@ export function DateRangeFilter() {
 }
 
 const dateInput: React.CSSProperties = {
-  flex: 1, minWidth: 0, height: 32, background: "#111318", border: "1px solid #1E2128", borderRadius: 7,
-  padding: "0 8px", fontSize: 12, color: "#D1D5DB", fontFamily: "JetBrains Mono", outline: "none",
+  flex: 1, minWidth: 0, height: 32, background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 7,
+  padding: "0 8px", fontSize: 12, color: "var(--tx-2)", fontFamily: "JetBrains Mono", outline: "none",
 };

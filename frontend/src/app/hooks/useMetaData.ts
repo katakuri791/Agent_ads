@@ -100,12 +100,22 @@ export function useAudiences() {
   });
 }
 
+// ── Posts planifiés (Schedule) ───────────────────────────────────────────────
+export function useScheduledPosts() {
+  const { selectedAccountId } = useAccount();
+  return useQuery({
+    queryKey: qk.scheduledPosts(selectedAccountId),
+    queryFn: () => api.getScheduledPosts(selectedAccountId),
+    placeholderData: keepPreviousData,
+  });
+}
+
 /** Invalide les caches data après une action mutante de l'agent (création de
  *  campagne, publication de post…). Remplace l'ancien clearCache(prefix). */
 export function useInvalidateMetaData() {
   const qc = useQueryClient();
   return useCallback(() => {
-    for (const key of ["dashboard", "campaigns", "audience-reach", "audiences", "page"]) {
+    for (const key of ["dashboard", "campaigns", "audience-reach", "audiences", "page", "scheduled-posts"]) {
       qc.invalidateQueries({ queryKey: [key] });
     }
   }, [qc]);

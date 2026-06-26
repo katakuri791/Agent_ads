@@ -4,6 +4,7 @@ import os
 import socket
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
@@ -30,6 +31,9 @@ from backend.config import CORS_ORIGINS
 from backend.db import (
     create_conversation,
     create_meta_account,
+    create_scheduled_post_record,
+    list_scheduled_post_records,
+    set_scheduled_post_status,
     delete_meta_account,
     get_conversation,
     get_meta_account,
@@ -38,10 +42,12 @@ from backend.db import (
     list_meta_accounts,
     load_messages,
     log_tool_call,
+    save_campaign_failure,
     save_campaign_tree,
     save_message,
     set_default_meta_account,
     touch_conversation,
+    update_fb_campaign_status,
     update_meta_account,
     upsert_user_settings,
 )
@@ -53,16 +59,20 @@ from backend.meta_tools import (
     get_campaign_detail,
     list_campaigns_with_insights,
     list_custom_audiences,
+    set_campaign_status,
     test_connection,
     upload_image_bytes,
     upload_video_bytes,
 )
+from backend.ratelimit import check_rate_limit
 from backend.schemas import (
     AudienceReachResponse,
     AudienceSummary,
     AuthResponse,
+    CampaignCreated,
     CampaignDetailResponse,
     CampaignQuestionnaire,
+    CampaignStatusUpdate,
     CampaignSummary,
     ChatImageUploadResponse,
     ChatRequest,
@@ -81,6 +91,8 @@ from backend.schemas import (
     MetaTestResponse,
     PagePost,
     PageSummaryResponse,
+    ScheduledPost,
+    ScheduledPostsResponse,
     SearchResponse,
     SearchResultItem,
     SignupRequest,
@@ -431,23 +443,36 @@ async def route_create_page_post(
     message: str = Form(""),
     link: Optional[str] = Form(None),
     image: Optional[UploadFile] = File(None),
+    video: Optional[UploadFile] = File(None),
     account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> dict:
-    """Publie un post sur la page Facebook de l'utilisateur (texte, lien, ou
-    photo + légende). La publication est immédiate et irréversible."""
+    """Publie un post sur la page Facebook de l'utilisateur (texte, lien, photo ou
+    vidéo + légende). La publication est immédiate et irréversible.
+    Précédence du média : vidéo > image > texte."""
     settings = _resolve_account(user.id, account_id, need_page=True)
     message = (message or "").strip()
     link = (link or "").strip() or None
 
+    video_data = await video.read() if video is not None else b""
+    if video_data and len(video_data) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Vidéo trop lourde (>200 Mo).")
     image_data = await image.read() if image is not None else b""
     if image_data and len(image_data) > 30 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Image trop lourde (>30 Mo).")
-    if not message and not image_data:
-        raise HTTPException(status_code=400, detail="Un message ou une image est requis.")
+    if not message and not image_data and not video_data:
+        raise HTTPException(status_code=400, detail="Un message, une image ou une vidéo est requis.")
 
     try:
-        if image_data:
+        if video_data:
+            result = meta_pages.create_page_video_post(
+                settings["meta_page_id"],
+                settings["meta_access_token"],
+                video_data,
+                message=message or None,
+                filename=video.filename or "video.mp4",
+            )
+        elif image_data:
             result = meta_pages.create_page_photo_post(
                 settings["meta_page_id"],
                 settings["meta_access_token"],
@@ -467,6 +492,193 @@ async def route_create_page_post(
 
     post_id = result.get("post_id") or result.get("id")
     return {"ok": True, "post_id": post_id}
+
+
+# ─── Posts planifiés (Schedule) ──────────────────────────────────────────────
+def _merge_scheduled_posts(live: list[dict], records: list[dict]) -> list[dict]:
+    """Fusionne les posts live Meta avec l'historique persisté (table scheduled_posts).
+
+    Meta retire un post de l'arête `scheduled_posts` dès publication → on s'appuie
+    sur la base pour ne pas perdre l'historique. Pour un post enregistré absent du
+    live ET dont la date est passée : il a été publié → status='published' (grisé).
+    """
+    now = datetime.now(timezone.utc)
+    by_id: dict[str, dict] = {}
+    for p in live:
+        if p.get("id"):
+            by_id[str(p["id"])] = p
+
+    for r in records:
+        mid = r.get("meta_post_id")
+        if mid and str(mid) in by_id:
+            continue  # Meta est autoritaire sur les posts encore présents
+        # Post connu de la base mais absent du live Meta.
+        sched = r.get("scheduled_time")
+        try:
+            is_past = bool(sched) and datetime.fromisoformat(
+                str(sched).replace("Z", "+00:00")
+            ) <= now
+        except (ValueError, TypeError):
+            is_past = False
+        # Une planification passée et disparue du live = publiée par Meta.
+        status = "published" if (is_past or r.get("status") == "published") else "scheduled"
+        if status == "published" and r.get("status") != "published" and mid:
+            set_scheduled_post_status(str(mid), "published")  # persiste la transition
+        synth = {
+            "id": str(mid) if mid else f"local-{r.get('id')}",
+            "message": r.get("message") or "",
+            "type": r.get("type") or "text",
+            "scheduled_time": sched,
+            "created_time": r.get("created_at"),
+            "permalink_url": None,
+            "full_picture": r.get("full_picture"),
+            "status": status,
+        }
+        by_id[synth["id"]] = synth
+
+    merged = list(by_id.values())
+    merged.sort(key=lambda p: p.get("scheduled_time") or "")
+    return merged
+
+
+@app.get("/meta/scheduled-posts", response_model=ScheduledPostsResponse)
+def route_list_scheduled_posts(
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> ScheduledPostsResponse:
+    settings = _resolve_account(user.id, account_id, need_page=True)
+    try:
+        posts, reason = meta_pages.list_scheduled_posts(
+            settings["meta_page_id"], settings["meta_access_token"]
+        )
+    except Exception as exc:
+        raise _meta_http_error(exc)
+    # `scheduled_posts` renvoie une liste vide SANS erreur quand pages_manage_posts
+    # manque → on lève l'avertissement explicitement pour ne pas laisser un calendrier
+    # vide silencieux (cause du post orphelin non supprimable).
+    if not reason:
+        scopes = meta_pages.list_token_scopes(settings["meta_access_token"])
+        if scopes and "pages_manage_posts" not in scopes:
+            reason = meta_pages.MANAGE_POSTS_MISSING
+    # Fusion avec l'historique persisté : les posts déjà publiés restent visibles.
+    records = list_scheduled_post_records(user.id, settings["meta_page_id"])
+    posts = _merge_scheduled_posts(posts, records)
+    return ScheduledPostsResponse(posts=[ScheduledPost(**p) for p in posts], blocked_reason=reason)
+
+
+@app.post("/meta/scheduled-posts")
+async def route_create_scheduled_post(
+    scheduled_time: str = Form(...),  # ISO 8601 ou epoch (secondes)
+    message: str = Form(""),
+    link: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
+    video: Optional[UploadFile] = File(None),
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    """Planifie un post (texte/lien/photo/vidéo) publié automatiquement par Meta.
+    Précédence du média : vidéo > image > texte."""
+    settings = _resolve_account(user.id, account_id, need_page=True)
+    message = (message or "").strip()
+    link = (link or "").strip() or None
+
+    # Accepte un timestamp epoch (secondes) ou une date ISO 8601.
+    raw = (scheduled_time or "").strip()
+    try:
+        ts = int(float(raw)) if raw.replace(".", "", 1).isdigit() else int(
+            datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        )
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Date de planification invalide.")
+
+    if ts < int(time.time()) + 10 * 60:
+        raise HTTPException(
+            status_code=400,
+            detail="La planification doit être au moins 10 minutes dans le futur (contrainte Meta).",
+        )
+
+    video_data = await video.read() if video is not None else b""
+    if video_data and len(video_data) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Vidéo trop lourde (>200 Mo).")
+    image_data = await image.read() if image is not None else b""
+    if image_data and len(image_data) > 30 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image trop lourde (>30 Mo).")
+    if not message and not image_data and not video_data:
+        raise HTTPException(status_code=400, detail="Un message, une image ou une vidéo est requis.")
+
+    # Garde-fou : sans `pages_manage_posts`, un upload « réussit » mais produit un
+    # média non publié orphelin (invisible dans scheduled_posts, non supprimable).
+    # On refuse proprement AVANT de créer cet orphelin.
+    try:
+        meta_pages.ensure_can_manage_posts(settings["meta_access_token"])
+    except meta_pages.GraphError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        result = meta_pages.create_scheduled_post(
+            settings["meta_page_id"],
+            settings["meta_access_token"],
+            message,
+            ts,
+            link=link,
+            image_bytes=image_data or None,
+            video_bytes=video_data or None,
+            filename=(video.filename if video else None) or (image.filename if image else None) or "upload",
+        )
+    except Exception as exc:
+        raise _meta_http_error(exc)
+    post_id = result.get("post_id") or result.get("id")
+    # Persiste la planification pour que l'historique survive à la publication.
+    post_type = "video" if video_data else "image" if image_data else "link" if link else "text"
+    create_scheduled_post_record(
+        user.id,
+        settings["meta_page_id"],
+        meta_post_id=str(post_id) if post_id else None,
+        scheduled_time=datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+        post_type=post_type,
+        message=message,
+        link=link,
+        account_id=settings.get("id"),
+    )
+    return {"ok": True, "post_id": post_id}
+
+
+@app.post("/meta/scheduled-posts/{post_id}/publish")
+def route_publish_scheduled_post(
+    post_id: str,
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    settings = _resolve_account(user.id, account_id, need_page=True)
+    try:
+        meta_pages.publish_scheduled_post(post_id, settings["meta_access_token"], settings["meta_page_id"])
+    except Exception as exc:
+        raise _meta_http_error(exc)
+    set_scheduled_post_status(post_id, "published")  # garde l'historique grisé
+    return {"ok": True}
+
+
+@app.delete("/meta/scheduled-posts/{post_id}")
+def route_delete_scheduled_post(
+    post_id: str,
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    settings = _resolve_account(user.id, account_id, need_page=True)
+    # Message clair si le scope manque (sinon Meta renvoie un subcode 33 cryptique).
+    try:
+        meta_pages.ensure_can_manage_posts(settings["meta_access_token"])
+    except meta_pages.GraphError as exc:
+        # On retire quand même de NOTRE calendrier (le post côté Meta reste un
+        # orphelin non supprimable tant que le scope n'est pas accordé).
+        set_scheduled_post_status(post_id, "deleted")
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        meta_pages.delete_scheduled_post(post_id, settings["meta_access_token"], settings["meta_page_id"])
+    except Exception as exc:
+        raise _meta_http_error(exc)
+    set_scheduled_post_status(post_id, "deleted")  # retiré de l'historique
+    return {"ok": True}
 
 
 @app.get("/meta/campaigns/{campaign_id}/detail", response_model=CampaignDetailResponse)
@@ -557,6 +769,23 @@ def route_meta_campaigns(
     return [CampaignSummary(**r) for r in rows]
 
 
+@app.patch("/meta/campaigns/{campaign_id}/status")
+def route_update_campaign_status(
+    campaign_id: str,
+    body: CampaignStatusUpdate,
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    """Active (ACTIVE) ou met en pause (PAUSED) une campagne Meta. Met aussi à jour
+    le cache (fb_campaigns) pour un affichage immédiat dans la liste."""
+    settings = _resolve_account(user.id, account_id, need_account=True)
+    ok, msg = set_campaign_status(settings["meta_access_token"], campaign_id, body.status)
+    if not ok:
+        raise HTTPException(status_code=502, detail=msg)
+    update_fb_campaign_status(campaign_id, body.status)
+    return {"ok": True, "status": body.status}
+
+
 @app.get("/meta/dashboard", response_model=DashboardResponse)
 def route_meta_dashboard(
     days: int = Query(30, ge=1, le=90),
@@ -608,15 +837,23 @@ def route_meta_dashboard(
     roas = _f(data.get("roas"))
     profit = _f(data.get("profit"))
 
+    # Sans revenu remonté par Meta (aucune conversion trackée), Revenue/ROAS/Profit
+    # n'ont pas de sens : on affiche "—" plutôt que 0.00 / un profit = −Spend trompeur
+    # (aucun chiffre inventé). raw reste numérique pour ne pas casser le tri/sparkline.
+    has_revenue = revenue > 0
+    revenue_val = f"${revenue:,.2f}" if has_revenue else "—"
+    roas_val = f"{roas:.2f}x" if has_revenue else "—"
+    profit_val = f"${profit:,.2f}" if has_revenue else "—"
+
     ch = data.get("changes") or {}
     kpis = [
         DashboardKpi(label="Impressions", value=fmt_int(impressions), raw=impressions, change=ch.get("impressions")),
         DashboardKpi(label="Clicks", value=fmt_int(clicks), raw=clicks, change=ch.get("clicks")),
         DashboardKpi(label="Reach", value=fmt_int(reach), raw=reach, change=ch.get("reach")),
         DashboardKpi(label="Spend", value=f"${spend:,.2f}", raw=spend, change=ch.get("spend")),
-        DashboardKpi(label="Revenue", value=f"${revenue:,.2f}", raw=revenue, change=ch.get("revenue")),
-        DashboardKpi(label="ROAS", value=f"{roas:.2f}x", raw=roas),
-        DashboardKpi(label="Profit", value=f"${profit:,.2f}", raw=profit),
+        DashboardKpi(label="Revenue", value=revenue_val, raw=revenue, change=ch.get("revenue")),
+        DashboardKpi(label="ROAS", value=roas_val, raw=roas),
+        DashboardKpi(label="Profit", value=profit_val, raw=profit),
         DashboardKpi(label="CTR", value=f"{ctr:.2f}%", raw=ctr, change=ch.get("ctr")),
         DashboardKpi(label="CPC", value=f"${cpc:.2f}", raw=cpc, change=ch.get("cpc")),
         DashboardKpi(label="CPM", value=f"${cpm:.2f}", raw=cpm, change=ch.get("cpm")),
@@ -907,6 +1144,15 @@ _QCM_REPLY = (
 
 @app.post("/chat", response_model=ChatResponse)
 def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) -> ChatResponse:
+    # Garde-fou anti-rafale (review §5.7) : borne les messages par utilisateur
+    # pour éviter qu'un agent en boucle ne sature /chat (et crée des campagnes
+    # en série). 30 messages / minute.
+    if not check_rate_limit(user.id, "chat", limit=30, window_s=60):
+        raise HTTPException(
+            status_code=429,
+            detail="Trop de messages en peu de temps. Réessaie dans une minute.",
+        )
+
     # L'agent agit sur le compte sélectionné dans l'UI (multi-clés).
     settings = get_meta_account(user.id, body.account_id)
 
@@ -993,7 +1239,22 @@ def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) 
 
     # Detect structured output emitted by emit_* tools.
     structured: Optional[StructuredOutput] = None
-    if persist.get("last_brief"):
+    last_created = persist.get("last_created") if persist else None
+    # Une campagne vient d'être créée → la carte de confirmation PAUSED prime sur
+    # tout le reste (review §5.4 : mettre en avant le garde-fou sécurité).
+    if last_created:
+        try:
+            structured = CampaignCreated(
+                campaign_id=last_created["campaign_id"],
+                adset_id=last_created.get("adset_id"),
+                ad_id=last_created.get("ad_id"),
+                name=last_created["name"],
+                objective=last_created.get("objective"),
+                daily_budget=last_created.get("daily_budget"),
+            )
+        except Exception:
+            structured = None
+    if structured is None and persist.get("last_brief"):
         from backend.schemas import CampaignBrief
 
         try:
@@ -1038,7 +1299,7 @@ def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) 
             duration_ms,
         )
 
-    last_created = persist.get("last_created") if persist else None
+    # Audit trail de création (review §5.2) : on persiste le SUCCÈS comme l'ÉCHEC.
     if last_created:
         try:
             save_campaign_tree(
@@ -1049,15 +1310,28 @@ def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) 
                 daily_budget=last_created.get("daily_budget"),
                 adset_meta_id=last_created.get("adset_id"),
                 adset_name=f"{last_created['name']} - AdSet",
-                optimization_goal="LINK_CLICKS",
+                optimization_goal=last_created.get("optimization_goal", "LINK_CLICKS"),
                 billing_event="IMPRESSIONS",
                 targeting=last_created.get("targeting"),
                 ad_meta_id=last_created.get("ad_id"),
                 ad_name=f"{last_created['name']} - Ad",
                 creative_id=last_created.get("creative_id"),
+                request_id=last_created.get("request_id"),
             )
-        except Exception as exc:
-            print(f"[warn] save_campaign_tree failed: {exc}")
+        except Exception:
+            logger.exception("save_campaign_tree failed")
+    else:
+        last_error = persist.get("last_error") if persist else None
+        if last_error:
+            save_campaign_failure(
+                user_id=user.id,
+                name=last_error.get("name", "(campagne sans nom)"),
+                objective=last_error.get("objective"),
+                daily_budget=last_error.get("daily_budget"),
+                error_log=last_error.get("error_message", ""),
+                stage=last_error.get("stage"),
+                request_id=last_error.get("request_id"),
+            )
 
     touch_conversation(conversation_id)
 

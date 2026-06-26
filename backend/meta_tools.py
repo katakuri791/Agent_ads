@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any, Optional
@@ -99,9 +100,14 @@ def build_meta_tools(
     ad_account_id: str,
     page_id: str,
     meta_pixel_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> tuple[list, dict[str, Any]]:
     _init_api(access_token)
-    _persist: dict[str, Any] = {}
+    # request_id unique par construction d'agent (= par appel /chat) : sert
+    # d'identifiant d'idempotence pour la persistance en base (review §5.2).
+    _persist: dict[str, Any] = {"request_id": uuid.uuid4().hex}
+    # Garde-fou anti-rafale : nombre max de campagnes créées par utilisateur/heure.
+    _MAX_CAMPAIGNS_PER_HOUR = 10
 
     @tool
     def create_full_campaign(
@@ -149,6 +155,22 @@ def build_meta_tools(
                 f"✅ Campagne déjà créée dans ce tour (ID {already['campaign_id']}). "
                 "Ne la recrée pas — relaie ce résultat à l'utilisateur."
             )
+
+        # ── Garde-fou anti-rafale (review §5.7) ─────────────────────────
+        # Si l'utilisateur (ou une boucle de l'agent) a déjà créé beaucoup de
+        # campagnes dans la dernière heure, on refuse proprement et on demande
+        # une confirmation au lieu d'en empiler des dizaines par accident.
+        if user_id:
+            from .db import count_recent_campaigns
+
+            since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            if count_recent_campaigns(user_id, since) >= _MAX_CAMPAIGNS_PER_HOUR:
+                return (
+                    f"⚠️ Limite atteinte : {_MAX_CAMPAIGNS_PER_HOUR} campagnes déjà "
+                    "créées dans la dernière heure. Par sécurité, ne crée rien de plus "
+                    "sans une confirmation explicite de l'utilisateur (demande-lui s'il "
+                    "veut vraiment continuer)."
+                )
 
         # ── Validations préalables ──────────────────────────────────────
         # Un visuel est requis : soit une photo (image_hash hex), soit une vidéo
@@ -206,6 +228,19 @@ def build_meta_tools(
             # Lecture best-effort : on ne bloque pas la création si la liste échoue.
             pass
 
+        # Mémorise l'échec pour que /chat le persiste dans la table campaigns
+        # (status_detail=failed + error_log complet) — review §5.2.
+        def _record_failure(stage: str, message: str) -> str:
+            _persist["last_error"] = {
+                "stage": stage,
+                "error_message": message,
+                "request_id": _persist.get("request_id"),
+                "name": campaign_name,
+                "objective": objective,
+                "daily_budget": daily_budget,
+            }
+            return message
+
         try:
             campaign = account.create_campaign(
                 params={
@@ -220,7 +255,7 @@ def build_meta_tools(
                 }
             )
         except FacebookRequestError as e:
-            return _fmt_fb_error(e, "la création de la campagne")
+            return _record_failure("campaign", _fmt_fb_error(e, "la création de la campagne"))
 
         try:
             adset = account.create_ad_set(
@@ -241,7 +276,7 @@ def build_meta_tools(
             )
         except FacebookRequestError as e:
             _rollback_campaign(campaign["id"])
-            return _fmt_fb_error(e, "la création de l'ad set")
+            return _record_failure("adset", _fmt_fb_error(e, "la création de l'ad set"))
 
         # Annonce VIDÉO : object_story_spec.video_data. Meta exige une miniature
         # (image_hash fourni, ou récupérée auto sur la vidéo une fois traitée).
@@ -252,10 +287,11 @@ def build_meta_tools(
                 thumb_url, vid_err = _wait_video_thumbnail(video_id, access_token)
                 if not thumb_url:
                     _rollback_campaign(campaign["id"])
-                    return (
+                    return _record_failure(
+                        "video_thumbnail",
                         "❌ La vidéo est encore en cours de traitement par Meta "
                         f"({vid_err or 'miniature indisponible'}). Réessaie dans "
-                        "une minute, ou fournis une photo comme miniature."
+                        "une minute, ou fournis une photo comme miniature.",
                     )
             video_data: dict[str, Any] = {"video_id": video_id, "message": ad_message}
             if thumb_hash:
@@ -284,7 +320,7 @@ def build_meta_tools(
             )
         except FacebookRequestError as e:
             _rollback_campaign(campaign["id"])
-            return _fmt_fb_error(e, "la création du creative")
+            return _record_failure("creative", _fmt_fb_error(e, "la création du creative"))
 
         try:
             ad = account.create_ad(
@@ -297,7 +333,7 @@ def build_meta_tools(
             )
         except FacebookRequestError as e:
             _rollback_campaign(campaign["id"])
-            return _fmt_fb_error(e, "la création de l'ad")
+            return _record_failure("ad", _fmt_fb_error(e, "la création de l'ad"))
 
         _persist["last_created"] = {
             "campaign_id": campaign["id"],
@@ -313,6 +349,7 @@ def build_meta_tools(
                 "age_max": age_max,
             },
             "optimization_goal": optimization_goal,
+            "request_id": _persist.get("request_id"),
         }
 
         return (
@@ -494,6 +531,24 @@ def test_connection(access_token: str, ad_account_id: str) -> tuple[bool, str]:
         return True, account.get("name", "(sans nom)")
     except Exception as exc:
         return False, str(exc)
+
+
+def set_campaign_status(access_token: str, campaign_id: str, status: str) -> tuple[bool, str]:
+    """Active (ACTIVE) ou met en pause (PAUSED) une campagne via la Marketing API.
+
+    Retourne (ok, message). Le message contient l'erreur Meta complète en cas d'échec.
+    """
+    status = (status or "").strip().upper()
+    if status not in ("ACTIVE", "PAUSED"):
+        return False, "Statut invalide (attendu ACTIVE ou PAUSED)."
+    try:
+        _init_api(access_token)
+        Campaign(campaign_id).api_update(params={"status": status})
+        return True, status
+    except FacebookRequestError as exc:
+        return False, _fmt_fb_error(exc, "la mise à jour du statut de la campagne")
+    except Exception as exc:
+        return False, f"❌ Erreur : {exc}"
 
 
 # ─── Read-only helpers used by HTTP endpoints (not langchain tools) ──────────

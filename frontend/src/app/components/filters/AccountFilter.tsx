@@ -24,8 +24,8 @@ export function AccountFilter({ onGoToSettings }: { onGoToSettings: () => void }
 
   if (list.length === 0) {
     return (
-      <button onClick={onGoToSettings} className="ms-btn" style={{ display: "flex", alignItems: "center", gap: 8, height: 36, padding: "0 12px", borderRadius: 8, background: "#111318", border: "1px solid #1E2128", color: "#9AA1AC", fontSize: 13, fontFamily: "IBM Plex Sans", cursor: "pointer" }}>
-        <Link2 size={14} style={{ color: "#6B7280" }} />
+      <button onClick={onGoToSettings} className="ms-btn" style={{ display: "flex", alignItems: "center", gap: 8, height: 36, padding: "0 12px", borderRadius: 8, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", fontSize: 13, fontFamily: "IBM Plex Sans", cursor: "pointer" }}>
+        <Link2 size={14} style={{ color: "var(--tx-dim)" }} />
         <span>Aucun compte connecté</span>
       </button>
     );
@@ -35,30 +35,30 @@ export function AccountFilter({ onGoToSettings }: { onGoToSettings: () => void }
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button onClick={() => setOpen((o) => !o)} title={current?.meta_ad_account_id || undefined} className="ms-btn"
-        style={{ display: "flex", alignItems: "center", gap: 9, height: 36, padding: "0 12px", borderRadius: 8, background: "#111318", border: "1px solid " + (open ? "#1877F2" : "#1E2128"), color: "#D1D5DB", fontSize: 13, fontFamily: "IBM Plex Sans", cursor: "pointer" }}>
-        <span style={{ width: 18, height: 18, borderRadius: 5, background: "#1877F2", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>{label[0]?.toUpperCase()}</span>
+        style={{ display: "flex", alignItems: "center", gap: 9, height: 36, padding: "0 12px", borderRadius: 8, background: "var(--surf-card)", border: "1px solid " + (open ? "var(--accent)" : "var(--bd)"), color: "var(--tx-2)", fontSize: 13, fontFamily: "IBM Plex Sans", cursor: "pointer" }}>
+        <span style={{ width: 18, height: 18, borderRadius: 5, background: "var(--accent)", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>{label[0]?.toUpperCase()}</span>
         <span style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-        <ChevronDown size={14} style={{ color: "#6B7280" }} />
+        <ChevronDown size={14} style={{ color: "var(--tx-dim)" }} />
       </button>
       {open && (
-        <div style={{ position: "absolute", top: 42, right: 0, minWidth: 240, background: "#16181F", border: "1px solid #1E2128", borderRadius: 10, padding: 6, zIndex: 60, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }}>
+        <div style={{ position: "absolute", top: 42, right: 0, minWidth: 240, background: "var(--surf-pop)", border: "1px solid var(--bd)", borderRadius: 10, padding: 6, zIndex: 60, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }}>
           {list.map((a) => {
             const active = current?.id === a.id;
             return (
               <button key={a.id} className="ms-menu-item" onClick={() => { setSelectedAccountId(a.id); setOpen(false); }}
-                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "9px 10px", fontSize: 12.5, color: active ? "#F9FAFB" : "#D1D5DB", background: active ? "#1877F215" : "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "IBM Plex Sans" }}>
-                <span style={{ width: 18, height: 18, borderRadius: 5, background: a.meta_access_token_set ? "#1877F2" : "#2A2E37", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, flexShrink: 0 }}>{(a.label || "M")[0]?.toUpperCase()}</span>
+                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "9px 10px", fontSize: 12.5, color: active ? "var(--tx)" : "var(--tx-2)", background: active ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "IBM Plex Sans" }}>
+                <span style={{ width: 18, height: 18, borderRadius: 5, background: a.meta_access_token_set ? "var(--accent)" : "var(--sw)", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, flexShrink: 0 }}>{(a.label || "M")[0]?.toUpperCase()}</span>
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.label}</span>
-                  <span style={{ display: "block", fontFamily: "JetBrains Mono", fontSize: 10.5, color: "#6B7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.meta_ad_account_id || "—"}{a.is_default ? " · défaut" : ""}</span>
+                  <span style={{ display: "block", fontFamily: "JetBrains Mono", fontSize: 10.5, color: "var(--tx-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.meta_ad_account_id || "—"}{a.is_default ? " · défaut" : ""}</span>
                 </span>
-                {active && <Check size={14} style={{ color: "#1877F2", flexShrink: 0 }} />}
+                {active && <Check size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />}
               </button>
             );
           })}
-          <div style={{ borderTop: "1px solid #1E2128", margin: "6px 4px 4px" }} />
+          <div style={{ borderTop: "1px solid var(--bd)", margin: "6px 4px 4px" }} />
           <button className="ms-menu-item" onClick={() => { onGoToSettings(); setOpen(false); }}
-            style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", fontSize: 12, color: "#9AA1AC", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "IBM Plex Sans" }}>
+            style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", fontSize: 12, color: "var(--tx-3)", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "IBM Plex Sans" }}>
             + Gérer les clés API
           </button>
         </div>

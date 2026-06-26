@@ -39,7 +39,7 @@ export function SyncIndicator() {
   return (
     <div
       title={isError ? s?.last_error || "Erreur de synchronisation" : "Dernière synchronisation des données Meta"}
-      style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: isError ? "#F43F5E" : "#9AA1AC" }}
+      style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: isError ? "#F43F5E" : "var(--tx-3)" }}
     >
       {isError && <AlertTriangle size={14} />}
       <span style={{ whiteSpace: "nowrap", fontFamily: "JetBrains Mono", fontSize: 11.5 }}>{label}</span>
@@ -49,7 +49,7 @@ export function SyncIndicator() {
         title="Rafraîchir les données depuis Meta"
         style={{
           width: 32, height: 32, borderRadius: 8, background: "transparent",
-          border: "1px solid #1E2128", color: isError ? "#F43F5E" : "#9AA1AC",
+          border: "1px solid var(--bd)", color: isError ? "#F43F5E" : "var(--tx-3)",
           cursor: !accountId || busy ? "default" : "pointer", opacity: !accountId || busy ? 0.6 : 1,
           display: "inline-flex", alignItems: "center", justifyContent: "center",
         }}

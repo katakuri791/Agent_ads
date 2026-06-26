@@ -250,6 +250,78 @@ def save_message(
     return res.data[0]
 
 
+# ─── Posts planifiés (historique persistant) ─────────────────────────────────
+# Meta retire un post de `scheduled_posts` dès publication → on garde ici la
+# mémoire de chaque planification pour que l'historique survive (affiché grisé).
+
+
+def create_scheduled_post_record(
+    user_id: str,
+    page_id: str,
+    *,
+    meta_post_id: Optional[str],
+    scheduled_time: str,
+    post_type: str = "text",
+    message: str = "",
+    link: Optional[str] = None,
+    full_picture: Optional[str] = None,
+    account_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Enregistre une planification. Best-effort : un échec de persistance ne doit
+    pas faire échouer la création Meta déjà réussie."""
+    try:
+        res = (
+            supabase_admin.table("scheduled_posts")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "account_id": account_id,
+                    "page_id": page_id,
+                    "meta_post_id": meta_post_id,
+                    "type": post_type,
+                    "message": message or "",
+                    "link": link,
+                    "full_picture": full_picture,
+                    "scheduled_time": scheduled_time,
+                    "status": "scheduled",
+                }
+            )
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception:
+        return None
+
+
+def list_scheduled_post_records(user_id: str, page_id: str) -> list[dict]:
+    """Historique persisté pour une page (hors posts supprimés)."""
+    try:
+        res = (
+            supabase_admin.table("scheduled_posts")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("page_id", page_id)
+            .neq("status", "deleted")
+            .order("scheduled_time")
+            .execute()
+        )
+        return res.data or []
+    except Exception:
+        return []
+
+
+def set_scheduled_post_status(meta_post_id: str, status: str) -> None:
+    """Met à jour le statut d'une planification persistée (best-effort)."""
+    if not meta_post_id:
+        return
+    try:
+        supabase_admin.table("scheduled_posts").update(
+            {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("meta_post_id", meta_post_id).execute()
+    except Exception:
+        pass
+
+
 def log_tool_call(
     user_id: str,
     conversation_id: str,
@@ -408,6 +480,7 @@ def save_campaign_tree(
     ad_meta_id: Optional[str] = None,
     ad_name: Optional[str] = None,
     creative_id: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> dict:
     campaign_row = (
         supabase_admin.table("campaigns")
@@ -419,6 +492,9 @@ def save_campaign_tree(
                 "objective": objective,
                 "status": "PAUSED",
                 "daily_budget": daily_budget,
+                "status_detail": "success",
+                "error_log": None,
+                "request_id": request_id,
             }
         )
         .execute()
@@ -463,3 +539,78 @@ def save_campaign_tree(
         )
 
     return {"campaign": campaign_row, "ad_set": adset_row, "ad": ad_row}
+
+
+def save_campaign_failure(
+    user_id: str,
+    name: str,
+    objective: Optional[str],
+    daily_budget: Optional[float],
+    error_log: str,
+    stage: Optional[str] = None,
+    campaign_meta_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Persiste une tentative de création de campagne ÉCHOUÉE.
+
+    Contrairement à save_campaign_tree (succès uniquement), cette fonction trace
+    les échecs Meta pour l'audit/debug (review §5.2) : message d'erreur complet,
+    étape (`stage`), et statut. `status_detail` vaut "partial" si une campagne a
+    bien été créée côté Meta avant le rollback, sinon "failed".
+    """
+    status_detail = "partial" if campaign_meta_id else "failed"
+    try:
+        res = (
+            supabase_admin.table("campaigns")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "meta_campaign_id": campaign_meta_id,
+                    "name": name,
+                    "objective": objective,
+                    "status": "FAILED",
+                    "daily_budget": daily_budget,
+                    "status_detail": status_detail,
+                    "error_log": (f"[{stage}] " if stage else "") + (error_log or "")[:4000],
+                    "request_id": request_id,
+                }
+            )
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception:
+        # Best-effort : un échec de log ne doit jamais masquer l'erreur d'origine.
+        return None
+
+
+def update_fb_campaign_status(campaign_id: str, status: str) -> None:
+    """Met à jour le statut d'une campagne dans le cache (fb_campaigns) pour que la
+    liste /meta/campaigns reflète immédiatement un activer/pause (le cache est lu
+    par dashboard.list_campaigns ; sinon l'UI resterait stale jusqu'au prochain sync).
+    Best-effort : un échec de cache ne doit pas faire échouer l'action Meta réussie."""
+    try:
+        supabase_admin.table("fb_campaigns").update(
+            {"status": status}
+        ).eq("id", campaign_id).execute()
+    except Exception:
+        pass
+
+
+def count_recent_campaigns(user_id: str, since_iso: str) -> int:
+    """Nombre de campagnes créées avec succès par l'utilisateur depuis `since_iso`.
+
+    Sert au garde-fou anti-rafale (review §5.7) : éviter qu'un agent en boucle ne
+    crée des dizaines de campagnes. Compte uniquement les succès réels.
+    """
+    try:
+        res = (
+            supabase_admin.table("campaigns")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .eq("status_detail", "success")
+            .gte("created_at", since_iso)
+            .execute()
+        )
+        return res.count or 0
+    except Exception:
+        return 0

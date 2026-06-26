@@ -128,6 +128,22 @@ export interface PagePost {
   shares: number;
 }
 
+export type ScheduledPostType = "text" | "image" | "video" | "link" | "carousel";
+export interface ScheduledPost {
+  id: string;
+  message: string;
+  type: ScheduledPostType;
+  scheduled_time?: string | null; // ISO 8601 UTC
+  created_time?: string | null;
+  permalink_url?: string | null;
+  full_picture?: string | null;
+  status: "scheduled" | "published";
+}
+export interface ScheduledPostsResponse {
+  posts: ScheduledPost[];
+  blocked_reason?: string | null;
+}
+
 export interface CampaignSummary {
   id: string;
   name: string;
@@ -187,6 +203,11 @@ export interface DashboardSeriesPoint {
   spend: number;
   clicks: number;
   ctr: number;
+  revenue: number;
+  profit: number;
+  cpc: number;
+  cpm: number;
+  roas: number;
 }
 
 export interface DashboardResponse {
@@ -335,7 +356,7 @@ export interface QuestionOptionT {
 export interface QuestionT {
   id: string;
   label: string;
-  type: "single" | "multi" | "text";
+  type: "single" | "multi" | "text" | "media";
   options: QuestionOptionT[];
   allow_custom: boolean;
   placeholder?: string | null;
@@ -350,10 +371,22 @@ export interface CampaignQuestionnaireStructured {
   submit_label: string;
 }
 
+export interface CampaignCreatedStructured {
+  kind: "campaign_created";
+  campaign_id: string;
+  adset_id?: string | null;
+  ad_id?: string | null;
+  name: string;
+  objective?: string | null;
+  daily_budget?: number | null; // en centimes (devise du compte)
+  status: string; // toujours "PAUSED"
+}
+
 export type StructuredOutput =
   | CampaignBriefStructured
   | InsightAnswerStructured
-  | CampaignQuestionnaireStructured;
+  | CampaignQuestionnaireStructured
+  | CampaignCreatedStructured;
 
 export interface ChatResponseT {
   conversation_id: string;
@@ -486,18 +519,53 @@ export const api = {
 
   /** Publie un post sur la page Facebook (texte, lien et/ou image). */
   createPagePost: (
-    body: { message?: string; link?: string; image?: File | null },
+    body: { message?: string; link?: string; image?: File | null; video?: File | null },
     accountId?: string | null,
   ) => {
     const form = new FormData();
     form.append("message", body.message || "");
     if (body.link) form.append("link", body.link);
     if (body.image) form.append("image", body.image);
+    if (body.video) form.append("video", body.video);
     return requestForm<{ ok: boolean; post_id?: string | null }>(
       `/meta/page-posts?_=1${acctParam(accountId)}`,
       form,
     );
   },
+
+  // ── Posts planifiés (Schedule) ─────────────────────────────────────────────
+  getScheduledPosts: (accountId?: string | null) =>
+    request<ScheduledPostsResponse>(`/meta/scheduled-posts?_=1${acctParam(accountId)}`),
+
+  /** Planifie un post (texte/lien/photo/vidéo). `scheduledTime` = ISO 8601. */
+  createScheduledPost: (
+    body: { scheduledTime: string; message?: string; link?: string; image?: File | null; video?: File | null },
+    accountId?: string | null,
+  ) => {
+    const form = new FormData();
+    form.append("scheduled_time", body.scheduledTime);
+    form.append("message", body.message || "");
+    if (body.link) form.append("link", body.link);
+    if (body.image) form.append("image", body.image);
+    if (body.video) form.append("video", body.video);
+    return requestForm<{ ok: boolean; post_id?: string | null }>(
+      `/meta/scheduled-posts?_=1${acctParam(accountId)}`,
+      form,
+      180_000,
+    );
+  },
+
+  publishScheduledPost: (postId: string, accountId?: string | null) =>
+    request<{ ok: boolean }>(
+      `/meta/scheduled-posts/${encodeURIComponent(postId)}/publish?_=1${acctParam(accountId)}`,
+      { method: "POST" },
+    ),
+
+  deleteScheduledPost: (postId: string, accountId?: string | null) =>
+    request<{ ok: boolean }>(
+      `/meta/scheduled-posts/${encodeURIComponent(postId)}?_=1${acctParam(accountId)}`,
+      { method: "DELETE" },
+    ),
 
   // `section` charge un seul onglet du panneau de détail (adsets|ads|demographics|
   // placements) → ~2 appels Meta au lieu de 6. Les autres clés reviennent vides.
@@ -521,6 +589,12 @@ export const api = {
 
   getCampaigns: (range: DateRange = { preset: "last_30d" }, accountId?: string | null) =>
     request<CampaignSummary[]>(`/meta/campaigns?${rangeQuery(range)}${acctParam(accountId)}`),
+
+  updateCampaignStatus: (campaignId: string, status: "ACTIVE" | "PAUSED", accountId?: string | null) =>
+    request<{ ok: boolean; status: string }>(
+      `/meta/campaigns/${encodeURIComponent(campaignId)}/status?_=1${acctParam(accountId)}`,
+      { method: "PATCH", body: JSON.stringify({ status }) },
+    ),
 
   getDashboard: (days: number | "all" = 30, accountId?: string | null, since?: string, until?: string) =>
     request<DashboardResponse>(

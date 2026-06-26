@@ -289,6 +289,247 @@ def create_page_photo_post(
     return _check(resp)
 
 
+def create_page_video_post(
+    page_id: str,
+    user_token: str,
+    video_bytes: bytes,
+    message: Optional[str] = None,
+    filename: str = "video.mp4",
+) -> dict[str, Any]:
+    """Publish a video post (video + optional caption). Uses /{page-id}/videos with
+    the uploaded bytes as `source`. Requires a Page Access Token. L'upload vidéo est
+    plus lourd → timeout étendu (3 min)."""
+    page_token = resolve_page_token(user_token, page_id)
+    data: dict[str, Any] = {"access_token": page_token}
+    if message:
+        data["description"] = message
+    resp = requests.post(
+        f"{GRAPH}/{page_id}/videos",
+        data=data,
+        files={"source": (filename, video_bytes)},
+        timeout=180,
+    )
+    return _check(resp)
+
+
+# ─── Posts planifiés (publication automatique par Meta) ──────────────────────
+# Facebook publie nativement à `scheduled_publish_time` quand `published=false`.
+# La fenêtre Meta autorisée : entre +10 min et +6 mois.
+_SCHED_FIELDS = (
+    "id,message,created_time,scheduled_publish_time,is_published,"
+    "permalink_url,full_picture,attachments{media_type}"
+)
+_SCHED_MAX_DELAY = 180 * 24 * 60 * 60  # ~6 mois
+
+
+def _post_type(item: dict[str, Any]) -> str:
+    """Déduit un type d'affichage (image/video/link/text) depuis les attachments."""
+    atts = (item.get("attachments") or {}).get("data") or []
+    if atts:
+        mt = (atts[0].get("media_type") or "").lower()
+        if mt in ("photo", "image"):
+            return "image"
+        if mt == "video":
+            return "video"
+        if mt in ("link", "share"):
+            return "link"
+        if mt == "album":
+            return "carousel"
+    return "text"
+
+
+def list_token_scopes(user_token: str) -> set[str]:
+    """Permissions accordées au token (via /me/permissions). Set vide si le token
+    est un token de PAGE (pas d'arête permissions) ou en cas d'erreur."""
+    try:
+        data = _check(requests.get(
+            f"{GRAPH}/me/permissions",
+            params={"access_token": user_token},
+            timeout=TIMEOUT,
+        ))
+    except GraphError:
+        return set()
+    return {
+        p.get("permission")
+        for p in data.get("data", [])
+        if p.get("status") == "granted" and p.get("permission")
+    }
+
+
+# Message réutilisé : la planification ET la suppression de posts de page exigent
+# `pages_manage_posts`. Sans ce scope, un upload « réussit » comme média non publié
+# (autorisé par pages_manage_ads) mais devient un orphelin invisible/indélébile.
+MANAGE_POSTS_MISSING = (
+    "La permission Meta « pages_manage_posts » est requise pour planifier, gérer "
+    "et supprimer des posts de page. Ton token ne l'a pas : régénère-le en cochant "
+    "« pages_manage_posts » (en plus de pages_show_list et pages_read_engagement)."
+)
+
+
+def ensure_can_manage_posts(user_token: str) -> None:
+    """Lève GraphError si le token ne peut pas gérer les posts de page.
+
+    On ne bloque QUE si on a pu lire les scopes ET que pages_manage_posts en est
+    absent. Un token de page (scopes illisibles → set vide) n'est pas bloqué ici :
+    il dispose intrinsèquement des droits de sa page."""
+    scopes = list_token_scopes(user_token)
+    if scopes and "pages_manage_posts" not in scopes:
+        raise GraphError(MANAGE_POSTS_MISSING)
+
+
+def list_scheduled_posts(
+    page_id: str, user_token: str
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Liste les posts planifiés (non encore publiés) de la page.
+
+    Essaie l'arête `scheduled_posts` puis `promotable_posts?is_published=false`.
+    Retourne (posts, reason) — `reason` non-None si Meta a refusé (permission
+    `pages_manage_posts` manquante, etc.), sans masquer la cause réelle."""
+    try:
+        page_token = resolve_page_token(user_token, page_id)
+    except GraphError as e:
+        return [], str(e)
+
+    last_err: Optional[str] = None
+    for edge in ("scheduled_posts", "promotable_posts"):
+        params: dict[str, Any] = {
+            "access_token": page_token, "fields": _SCHED_FIELDS, "limit": 100,
+        }
+        if edge == "promotable_posts":
+            params["is_published"] = "false"
+        try:
+            data = _check(requests.get(
+                f"{GRAPH}/{page_id}/{edge}", params=params, timeout=TIMEOUT,
+            ))
+        except GraphError as e:
+            last_err = str(e)
+            continue
+        out: list[dict[str, Any]] = []
+        for item in data.get("data", []):
+            spt = item.get("scheduled_publish_time")
+            if not spt:
+                continue  # on ne garde que les posts réellement planifiés
+            ts = int(spt)
+            out.append({
+                "id": item.get("id"),
+                "message": item.get("message") or "",
+                "type": _post_type(item),
+                "scheduled_time": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                "created_time": item.get("created_time"),
+                "permalink_url": item.get("permalink_url"),
+                "full_picture": item.get("full_picture"),
+                "status": "scheduled" if ts > datetime.now(timezone.utc).timestamp() else "published",
+            })
+        out.sort(key=lambda p: p["scheduled_time"])
+
+        # Historique : posts publiés récemment qui avaient un scheduled_publish_time.
+        # Meta retire ces posts de `scheduled_posts` une fois publiés → on les récupère
+        # via promotable_posts?is_published=true sur les 60 derniers jours.
+        try:
+            since_ts = int((datetime.now(timezone.utc) - timedelta(days=60)).timestamp())
+            hist_data = _check(requests.get(
+                f"{GRAPH}/{page_id}/promotable_posts",
+                params={
+                    "access_token": page_token,
+                    "fields": _SCHED_FIELDS,
+                    "is_published": "true",
+                    "since": str(since_ts),
+                    "limit": 50,
+                },
+                timeout=TIMEOUT,
+            ))
+            existing_ids = {p["id"] for p in out}
+            for item in hist_data.get("data", []):
+                spt = item.get("scheduled_publish_time")
+                if not spt:
+                    continue  # ne garder que les posts qui étaient planifiés
+                post_id = item.get("id")
+                if post_id in existing_ids:
+                    continue  # éviter les doublons
+                ts = int(spt)
+                out.append({
+                    "id": post_id,
+                    "message": item.get("message") or "",
+                    "type": _post_type(item),
+                    "scheduled_time": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                    "created_time": item.get("created_time"),
+                    "permalink_url": item.get("permalink_url"),
+                    "full_picture": item.get("full_picture"),
+                    "status": "published",
+                })
+        except (GraphError, Exception):
+            pass  # historique non critique : ne bloque pas l'affichage des futurs
+
+        out.sort(key=lambda p: p["scheduled_time"])
+        return out, None
+    return [], last_err
+
+
+def create_scheduled_post(
+    page_id: str,
+    user_token: str,
+    message: str,
+    scheduled_ts: int,
+    *,
+    link: Optional[str] = None,
+    image_bytes: Optional[bytes] = None,
+    video_bytes: Optional[bytes] = None,
+    filename: str = "upload",
+) -> dict[str, Any]:
+    """Planifie un post (texte / photo / vidéo / lien) qui sera publié
+    automatiquement par Meta à `scheduled_ts` (epoch secondes UTC)."""
+    now = datetime.now(timezone.utc).timestamp()
+    if scheduled_ts > now + _SCHED_MAX_DELAY:
+        raise GraphError("La planification ne peut pas dépasser 6 mois.")
+
+    page_token = resolve_page_token(user_token, page_id)
+    base: dict[str, Any] = {
+        "access_token": page_token,
+        "published": "false",
+        "scheduled_publish_time": int(scheduled_ts),
+    }
+    if image_bytes is not None:
+        if message:
+            base["message"] = message
+        resp = requests.post(
+            f"{GRAPH}/{page_id}/photos", data=base,
+            files={"source": (filename or "upload.jpg", image_bytes)}, timeout=180,
+        )
+    elif video_bytes is not None:
+        if message:
+            base["description"] = message
+        resp = requests.post(
+            f"{GRAPH}/{page_id}/videos", data=base,
+            files={"source": (filename or "video.mp4", video_bytes)}, timeout=300,
+        )
+    else:
+        base["message"] = message
+        if link:
+            base["link"] = link
+        resp = requests.post(f"{GRAPH}/{page_id}/feed", data=base, timeout=TIMEOUT)
+    return _check(resp)
+
+
+def publish_scheduled_post(post_id: str, user_token: str, page_id: str) -> dict[str, Any]:
+    """Publie immédiatement un post planifié (`is_published=true`)."""
+    page_token = resolve_page_token(user_token, page_id)
+    resp = requests.post(
+        f"{GRAPH}/{post_id}",
+        data={"access_token": page_token, "is_published": "true"},
+        timeout=TIMEOUT,
+    )
+    return _check(resp)
+
+
+def delete_scheduled_post(post_id: str, user_token: str, page_id: str) -> dict[str, Any]:
+    """Supprime un post planifié."""
+    page_token = resolve_page_token(user_token, page_id)
+    resp = requests.delete(
+        f"{GRAPH}/{post_id}", params={"access_token": page_token}, timeout=TIMEOUT,
+    )
+    return _check(resp)
+
+
 def get_page_insights(
     page_id: str, user_token: str, days: int = 28
 ) -> dict[str, int]:

@@ -416,6 +416,7 @@ def build_agent(user_settings: Optional[dict]):
         user_settings["meta_ad_account_id"],
         user_settings["meta_page_id"],
         user_settings.get("meta_pixel_id"),
+        user_settings.get("user_id"),
     )
     tools = tools + _build_structured_tools(persist)
     graph = create_react_agent(model=llm, tools=tools, prompt=SYSTEM_PROMPT_BASE)

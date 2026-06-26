@@ -154,13 +154,23 @@ def get_account_dashboard(
 
     series = []
     for r in res["series"]:
+        d_spend = _safe_float(r.get("spend"))
+        d_clicks = _safe_int(r.get("clicks"))
+        d_impr = _safe_int(r.get("impressions"))
+        d_revenue = _safe_float(r.get("revenue"))
         series.append({
             "date": str(r.get("date") or ""),
-            "impressions": _safe_int(r.get("impressions")),
+            "impressions": d_impr,
             "reach": _safe_int(r.get("reach")),
-            "clicks": _safe_int(r.get("clicks")),
-            "spend": _safe_float(r.get("spend")),
+            "clicks": d_clicks,
+            "spend": d_spend,
             "ctr": _safe_float(r.get("ctr")),
+            # Métriques dérivées par jour (données réelles, calculées — pas de fake).
+            "revenue": d_revenue,
+            "profit": round(d_revenue - d_spend, 2),
+            "cpc": round(d_spend / d_clicks, 2) if d_clicks else 0.0,
+            "cpm": round(d_spend / d_impr * 1000, 2) if d_impr else 0.0,
+            "roas": round(d_revenue / d_spend, 2) if d_spend else 0.0,
         })
 
     age = _share(res["age"])
