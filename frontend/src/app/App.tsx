@@ -29,9 +29,12 @@ function AppInner() {
       : <LoginPage onAuth={setUser} onGoToSignup={() => setAuthView("signup")} />;
   }
 
+  // Déconnexion : efface le token + le cache user, puis repasse à l'écran de login.
+  const handleLogout = () => { api.logout(); setAuthView("login"); setUser(null); };
+
   return (
     <AppProviders>
-      <AppShell user={user} onUserChange={setUser} />
+      <AppShell user={user} onUserChange={setUser} onLogout={handleLogout} />
     </AppProviders>
   );
 }

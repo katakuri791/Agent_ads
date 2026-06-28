@@ -34,8 +34,31 @@ class UserUpdateRequest(BaseModel):
 
 class AuthResponse(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: UserPublic
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+
+class NotificationOut(BaseModel):
+    id: str
+    type: str
+    title: str
+    body: Optional[str] = None
+    read: bool = False
+    created_at: str
+
+
+class NotificationsResponse(BaseModel):
+    items: list[NotificationOut]
+    unread_count: int
 
 
 class MetaSettingsRequest(BaseModel):
@@ -86,6 +109,7 @@ class MetaAccountResponse(BaseModel):
     preferred_currency: Optional[str] = None
     timezone: Optional[str] = None
     is_default: bool = False
+    token_status: str = "valid"  # "valid" | "expired"
 
 
 # ─── Structured agent output ─────────────────────────────────────────────────
@@ -232,6 +256,7 @@ class CampaignSummary(BaseModel):
     name: str
     objective: Optional[str] = None
     status: Optional[str] = None
+    created_time: Optional[str] = None
     daily_budget: Optional[float] = None
     impressions: int = 0
     clicks: int = 0
@@ -262,6 +287,7 @@ class DashboardSeriesPoint(BaseModel):
     ctr: float = 0.0
     revenue: float = 0.0
     profit: float = 0.0
+    leads: float = 0.0
     cpc: float = 0.0
     cpm: float = 0.0
     roas: float = 0.0

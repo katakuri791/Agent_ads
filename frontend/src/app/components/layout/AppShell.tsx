@@ -10,6 +10,7 @@ import { AudiencesPage } from "../../pages/AudiencesPage";
 import { SchedulePage } from "../../pages/SchedulePage";
 import { AIAgentPage } from "../../pages/AIAgentPage";
 import { SettingsPage } from "../../pages/SettingsPage";
+import { TokenAlertBanner } from "../TokenAlertBanner";
 
 /** Sections valides — sert à valider le param d'URL `view` (toute valeur inconnue
  *  retombe sur "overview"). Doit rester aligné avec les clés de `pages` ci-dessous. */
@@ -18,7 +19,7 @@ const validPage = (v: string | null): string => (v && (PAGES as readonly string[
 
 /** Coquille de l'app authentifiée : sidebar + topbar (avec les filtres globaux)
  *  + routage par état `page`, mirroré dans l'URL (?view=…). */
-export function AppShell({ user, onUserChange }: { user: AuthUser; onUserChange: (u: AuthUser) => void }) {
+export function AppShell({ user, onUserChange, onLogout }: { user: AuthUser; onUserChange: (u: AuthUser) => void; onLogout: () => void }) {
   const [page, setPage] = useState(() => validPage(getUrlParam("view")));
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useCallback((id: string) => { setPage(id); setUrlParams({ view: id }); }, []);
@@ -43,7 +44,7 @@ export function AppShell({ user, onUserChange }: { user: AuthUser; onUserChange:
     audiences: <AudiencesPage onGoToSettings={goToSettings} />,
     schedule: <SchedulePage onGoToSettings={goToSettings} />,
     ai: <AIAgentPage onNavigate={navigate} />,
-    settings: <SettingsPage user={user} onUserChange={onUserChange} />,
+    settings: <SettingsPage user={user} onUserChange={onUserChange} onLogout={onLogout} />,
   };
 
   return (
@@ -53,6 +54,7 @@ export function AppShell({ user, onUserChange }: { user: AuthUser; onUserChange:
         <Topbar page={page} user={user} onGoToSettings={goToSettings} />
         <main style={{ flex: 1, overflow: page === "ai" ? "hidden" : "auto", position: "relative" }}>
           <div key={page} className="ms-page" style={{ minHeight: "100%", height: page === "ai" ? "100%" : undefined, padding: page === "ai" ? 0 : 32 }}>
+            {page !== "settings" && page !== "ai" && <TokenAlertBanner onGoToSettings={goToSettings} />}
             {pages[page] || pages.overview}
           </div>
         </main>

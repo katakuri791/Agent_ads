@@ -1,4 +1,4 @@
-import { AuthUser, clearToken, getToken, setCachedUser, setToken } from "./auth";
+import { AuthUser, clearToken, getRefreshToken, getToken, setCachedUser, setRefreshToken, setToken } from "./auth";
 
 const API_BASE: string =
   (import.meta as any).env?.VITE_API_URL || "http://localhost:8000";
@@ -35,10 +35,51 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   }
 }
 
+// Routes qui émettent/valident des tokens : ne JAMAIS tenter de refresh sur leur
+// 401 (sinon boucle infinie). Le reste des routes 401 → refresh transparent.
+const NO_REFRESH_PATHS = ["/auth/refresh", "/auth/login", "/auth/signup", "/auth/logout"];
+
+// Single-flight : si 10 requêtes prennent un 401 en même temps, on ne déclenche
+// qu'UN seul /auth/refresh — les autres attendent son résultat (anti-course :
+// sinon chacune consommerait/invaliderait le refresh token à tour de rôle).
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function tryRefresh(): Promise<boolean> {
+  const rt = getRefreshToken();
+  if (!rt) return false;
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const res = await fetchWithTimeout(`${API_BASE}/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: rt }),
+        });
+        if (!res.ok) return false;
+        const data = (await res.json()) as AuthResponse;
+        setToken(data.access_token);
+        if (data.refresh_token) setRefreshToken(data.refresh_token);
+        setCachedUser(data.user);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    // Libère le verrou une fois résolu (succès ou échec) pour le prochain cycle.
+    refreshInFlight.finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+}
+
+function shouldTryRefresh(path: string): boolean {
+  return !NO_REFRESH_PATHS.some((p) => path.startsWith(p));
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
   authed = true,
+  isRetry = false,
 ): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -50,6 +91,11 @@ async function request<T>(
   }
   const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
   if (!res.ok) {
+    // 401 sur une route normale : on tente un refresh silencieux puis on rejoue
+    // la requête UNE fois. Échec du refresh → session morte → logout.
+    if (res.status === 401 && authed && !isRetry && shouldTryRefresh(path)) {
+      if (await tryRefresh()) return request<T>(path, options, authed, true);
+    }
     let detail = res.statusText;
     try {
       const body = await res.json();
@@ -64,12 +110,15 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-async function requestForm<T>(path: string, form: FormData, timeoutMs?: number): Promise<T> {
+async function requestForm<T>(path: string, form: FormData, timeoutMs?: number, isRetry = false): Promise<T> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: "POST", body: form, headers }, timeoutMs);
   if (!res.ok) {
+    if (res.status === 401 && !isRetry && shouldTryRefresh(path)) {
+      if (await tryRefresh()) return requestForm<T>(path, form, timeoutMs, true);
+    }
     let detail = res.statusText;
     try {
       const body = await res.json();
@@ -85,6 +134,7 @@ async function requestForm<T>(path: string, form: FormData, timeoutMs?: number):
 
 interface AuthResponse {
   access_token: string;
+  refresh_token?: string;
   token_type: string;
   user: AuthUser;
 }
@@ -149,6 +199,7 @@ export interface CampaignSummary {
   name: string;
   objective?: string | null;
   status?: string | null;
+  created_time?: string | null;
   daily_budget?: number | null;
   impressions: number;
   clicks: number;
@@ -187,6 +238,8 @@ export interface MetaAccount {
   preferred_currency: string | null;
   timezone: string | null;
   is_default: boolean;
+  /** "valid" | "expired" — passe à "expired" quand le worker détecte un token Meta mort. */
+  token_status: "valid" | "expired";
 }
 
 export interface DashboardKpi {
@@ -205,6 +258,7 @@ export interface DashboardSeriesPoint {
   ctr: number;
   revenue: number;
   profit: number;
+  leads: number;
   cpc: number;
   cpm: number;
   roas: number;
@@ -408,6 +462,20 @@ function acctParam(accountId?: string | null): string {
   return accountId ? `&account_id=${encodeURIComponent(accountId)}` : "";
 }
 
+export type NotificationType = "sync_error" | "campaign_failed" | "token_expired";
+export interface AppNotification {
+  id: string;
+  type: NotificationType | string;
+  title: string;
+  body?: string | null;
+  read: boolean;
+  created_at: string;
+}
+export interface NotificationsResponse {
+  items: AppNotification[];
+  unread_count: number;
+}
+
 export const api = {
   async signup(email: string, password: string, fullName?: string): Promise<AuthUser> {
     const data = await request<AuthResponse>(
@@ -416,6 +484,7 @@ export const api = {
       false,
     );
     setToken(data.access_token);
+    if (data.refresh_token) setRefreshToken(data.refresh_token);
     setCachedUser(data.user);
     return data.user;
   },
@@ -427,6 +496,7 @@ export const api = {
       false,
     );
     setToken(data.access_token);
+    if (data.refresh_token) setRefreshToken(data.refresh_token);
     setCachedUser(data.user);
     return data.user;
   },
@@ -453,8 +523,21 @@ export const api = {
   },
 
   logout(): void {
+    // Révoque le refresh token côté serveur (best-effort, non bloquant), puis
+    // purge le stockage local quoi qu'il arrive.
+    const rt = getRefreshToken();
+    if (rt) {
+      request("/auth/logout", { method: "POST", body: JSON.stringify({ refresh_token: rt }) }, false).catch(() => { /* best-effort */ });
+    }
     clearToken();
   },
+
+  // ─── Notifications ─────────────────────────────────────────────────────────
+  listNotifications: () => request<NotificationsResponse>("/notifications"),
+  markNotificationRead: (id: string) =>
+    request<{ ok: boolean }>(`/notifications/${encodeURIComponent(id)}`, { method: "PATCH" }),
+  markAllNotificationsRead: () =>
+    request<{ ok: boolean }>("/notifications/read-all", { method: "PATCH" }),
 
   getSettings: () => request<MetaSettings>("/settings"),
 

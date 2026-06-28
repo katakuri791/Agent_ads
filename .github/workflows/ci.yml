@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, ads_v3]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync
+      - name: Run backend tests
+        run: uv run pytest tests/ -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # `pnpm exec` ne déclenche pas le verify-deps-before-run de pnpm 11
+      # (contrairement à `pnpm run`), et les build scripts esbuild/oxide sont
+      # autorisés via pnpm-workspace.yaml → vitest et vite build fonctionnent.
+      - name: Run frontend tests
+        run: pnpm exec vitest run
+      - name: Build frontend
+        run: pnpm exec vite build

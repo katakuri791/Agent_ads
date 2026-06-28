@@ -53,8 +53,9 @@ function PostChip({ post, onClick, compact }: { post: SchedPost; onClick: (p: Sc
   const past = isPast(post);
   return (
     <button onClick={(e) => { e.stopPropagation(); onClick(post); }}
-      className="ms-sched-chip"
-      style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: compact ? "3px 7px" : "5px 8px", borderRadius: 8, background: col + "18", border: "1px solid " + col + "40", borderLeft: "3px solid " + col, color: "var(--tx)", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: compact ? 10.5 : 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", filter: past ? "saturate(0.22) brightness(0.65)" : undefined, opacity: past ? 0.72 : 1 }}>
+      className={"ms-sched-chip" + (past ? " ms-sched-past" : "")}
+      title={past ? "Déjà publié · cliquer pour voir le détail" : undefined}
+      style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: compact ? "3px 7px" : "5px 8px", borderRadius: 8, background: col + "18", border: "1px solid " + col + "40", borderLeft: "3px solid " + col, color: "var(--tx)", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: compact ? 10.5 : 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
       <span style={{ color: col, display: "inline-flex", flexShrink: 0 }}><TypeIcon type={post.type} size={compact ? 10 : 12} /></span>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{post.message || TYPE_LABEL[post.type]}</span>
     </button>
@@ -82,13 +83,19 @@ function MonthView({ cursor, posts, today, onCellClick, onPostClick }: {
             const isToday = sameDay(day, today);
             const dayPosts = posts.filter((p) => sameDay(p.when, day));
             return (
-              <div key={di} onClick={() => onCellClick(day)} className="ms-month-cell"
-                style={{ minHeight: 116, padding: 8, borderRight: di < 6 ? "1px solid var(--bd-weak)" : "none", cursor: "pointer", opacity: out ? 0.45 : 1, transition: "background .15s", display: "flex", flexDirection: "column", gap: 4 }}>
+              <div key={di} onClick={() => onCellClick(day)} className="ms-month-cell sched-month-cell"
+                title={`Planifier un post le ${day.getDate()} ${MONTHS[day.getMonth()].toLowerCase()}`}
+                style={{ padding: 8, borderRight: di < 6 ? "1px solid var(--bd-weak)" : "none", cursor: "pointer", opacity: out ? 0.45 : 1, transition: "background .15s", display: "flex", flexDirection: "column", gap: 4 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
                   <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: 999, fontSize: 12, fontWeight: isToday ? 700 : 500, fontFamily: "JetBrains Mono", background: isToday ? "var(--accent)" : "transparent", color: isToday ? "#fff" : "var(--tx-2)" }}>{day.getDate()}</span>
                   {dayPosts.length > 2 && <span style={{ fontSize: 10, color: "var(--tx-dim)", fontFamily: "JetBrains Mono" }}>+{dayPosts.length - 2}</span>}
                 </div>
                 {dayPosts.slice(0, 2).map((p) => <PostChip key={p.id} post={p} onClick={onPostClick} compact />)}
+                {dayPosts.length === 0 && !out && (
+                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 28 }}>
+                    <span className="sched-add-hint" style={{ display: "inline-flex", color: "var(--tx-dim)" }}><Plus size={16} /></span>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -105,7 +112,7 @@ function WeekView({ cursor, posts, today, onCellClick, onPostClick }: {
   const start = startOfMondayWeek(cursor);
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 }}>
+    <div className="sched-week">
       {days.map((day, i) => {
         const isToday = sameDay(day, today);
         const dayPosts = posts.filter((p) => sameDay(p.when, day)).sort((a, b) => +a.when - +b.when);
@@ -126,8 +133,9 @@ function WeekView({ cursor, posts, today, onCellClick, onPostClick }: {
                     const past = isPast(p);
                     return (
                       <div key={p.id} onClick={(e) => { e.stopPropagation(); onPostClick(p); }}
-                        className="ms-sched-week-card"
-                        style={{ background: TYPE_COLOR[p.type] + "15", border: "1px solid " + TYPE_COLOR[p.type] + "40", borderRadius: 12, padding: 12, cursor: "pointer", filter: past ? "saturate(0.22) brightness(0.65)" : undefined, opacity: past ? 0.72 : 1 }}>
+                        className={"ms-sched-week-card" + (past ? " ms-sched-past" : "")}
+                        title={past ? "Déjà publié · cliquer pour voir le détail" : undefined}
+                        style={{ background: TYPE_COLOR[p.type] + "15", border: "1px solid " + TYPE_COLOR[p.type] + "40", borderRadius: 12, padding: 12, cursor: "pointer" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                           <span style={{ width: 24, height: 24, borderRadius: 7, background: TYPE_COLOR[p.type] + "22", color: TYPE_COLOR[p.type], display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><TypeIcon type={p.type} size={13} /></span>
                           <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)" }}>{fmtTime(p.when)}</span>
@@ -154,12 +162,12 @@ function DayView({ cursor, posts, today, onCellClick, onPostClick }: {
   const hours = Array.from({ length: 16 }, (_, i) => 6 + i); // 6h..21h
   const rowH = 64;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 18 }}>
+    <div className="sched-day-grid">
       <Card pad={18}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14 }}>
           <div>
             <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 22, color: "var(--tx)" }}>{MONTHS[cursor.getMonth()]} {cursor.getDate()}</div>
-            <div style={{ fontSize: 12.5, color: "var(--tx-dim)", marginTop: 2 }}>{DOW_LONG[weekIdx(cursor)]} · {dayPosts.length} planifié(s)</div>
+            <div style={{ fontSize: 12.5, color: "var(--tx-dim)", marginTop: 2 }}>{DOW_LONG[weekIdx(cursor)]} · {dayPosts.length === 0 ? "rien de planifié" : `${dayPosts.length} post${dayPosts.length > 1 ? "s" : ""} planifié${dayPosts.length > 1 ? "s" : ""}`}</div>
           </div>
           {isToday && <span style={{ fontSize: 10.5, background: "var(--accent)", color: "#fff", padding: "3px 9px", borderRadius: 999, fontWeight: 600 }}>AUJ.</span>}
         </div>
@@ -173,8 +181,9 @@ function DayView({ cursor, posts, today, onCellClick, onPostClick }: {
               if (top < 0 || top > hours.length * rowH) return null;
               return (
                 <div key={p.id} onClick={(e) => { e.stopPropagation(); onPostClick(p); }}
-                  className="ms-sched-day-event"
-                  style={{ position: "absolute", top, left: 12, right: 12, padding: "10px 12px", background: TYPE_COLOR[p.type] + "20", border: "1px solid " + TYPE_COLOR[p.type] + "50", borderLeft: "3px solid " + TYPE_COLOR[p.type], borderRadius: 12, cursor: "pointer", filter: isPast(p) ? "saturate(0.22) brightness(0.65)" : undefined, opacity: isPast(p) ? 0.72 : 1 }}>
+                  className={"ms-sched-day-event" + (isPast(p) ? " ms-sched-past" : "")}
+                  title={isPast(p) ? "Déjà publié · cliquer pour voir le détail" : undefined}
+                  style={{ position: "absolute", top, left: 12, right: 12, padding: "10px 12px", background: TYPE_COLOR[p.type] + "20", border: "1px solid " + TYPE_COLOR[p.type] + "50", borderLeft: "3px solid " + TYPE_COLOR[p.type], borderRadius: 12, cursor: "pointer" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ color: TYPE_COLOR[p.type], display: "inline-flex" }}><TypeIcon type={p.type} size={13} /></span>
                     <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)" }}>{fmtTime(p.when)}</span>
@@ -189,7 +198,7 @@ function DayView({ cursor, posts, today, onCellClick, onPostClick }: {
       </Card>
       <Card pad={18}>
         <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 15, color: "var(--tx)", marginBottom: 14 }}>Pipeline du jour</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
           {([["Planifiés", dayPosts.filter((p) => p.status === "scheduled").length, "#1877F2"], ["Publiés", dayPosts.filter((p) => p.status === "published").length, "#22C55E"], ["Total", dayPosts.length, "#A855F7"]] as Array<[string, number, string]>).map((row, i) => (
             <div key={i} style={{ background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRadius: 12, padding: 12 }}>
               <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--tx-dim)" }}>{row[0]}</div>
@@ -287,6 +296,12 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
   const handleSubmit = () => {
     const when = new Date(`${date}T${time}:00`);
     if (isNaN(when.getTime())) { toast("Date invalide", { kind: "error", msg: "Vérifie la date et l'heure." }); return; }
+    // Meta refuse un créneau à moins de 10 min : on le dit clairement AVANT l'appel,
+    // au lieu de laisser remonter l'erreur brute (et anglaise) de Meta.
+    if (when.getTime() < Date.now() + 10 * 60 * 1000) {
+      toast("Créneau trop tôt", { kind: "error", msg: "La date doit être au moins 10 minutes dans le futur (contrainte Meta)." });
+      return;
+    }
     mutation.mutate();
   };
 
@@ -297,7 +312,7 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
 
   return (
     <div onClick={() => !mutation.isPending && onClose()} className="ms-fade-up" style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(6,13,31,.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(640px, 96vw)", maxHeight: "92vh", background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 18, boxShadow: "0 30px 90px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div onClick={(e) => e.stopPropagation()} className="sched-dialog" style={{ width: "min(640px, 96vw)", maxHeight: "92vh", background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 18, boxShadow: "0 30px 90px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "20px 24px", borderBottom: "1px solid var(--bd)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ width: 34, height: 34, borderRadius: 11, background: "color-mix(in srgb, var(--accent) 14%, transparent)", color: "var(--accent)", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><CalendarIcon size={18} /></div>
@@ -349,7 +364,7 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Date</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ width: "100%", height: 40, background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRadius: 10, padding: "0 14px", color: "var(--tx-2)", fontFamily: "IBM Plex Sans", fontSize: 14, outline: "none", colorScheme: "inherit" }} />
+              <input type="date" value={date} min={todayStr} onChange={(e) => setDate(e.target.value)} style={{ width: "100%", height: 40, background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRadius: 10, padding: "0 14px", color: "var(--tx-2)", fontFamily: "IBM Plex Sans", fontSize: 14, outline: "none", colorScheme: "inherit" }} />
             </div>
             <div>
               <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Heure</label>
@@ -424,6 +439,9 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
   const today = useMemo(() => new Date(), []);
   const [cursor, setCursor] = useState<Date>(() => new Date());
   const [view, setView] = useState<"Jour" | "Semaine" | "Mois">("Mois");
+  // Direction de la dernière navigation : +1 (suivant), -1 (précédent), 0 (fondu).
+  // `navSeq` force le re-déclenchement de l'animation même si la cible est identique.
+  const [nav, setNav] = useState<{ dir: 1 | -1 | 0; seq: number }>({ dir: 0, seq: 0 });
   const [compose, setCompose] = useState<{ open: boolean; date: Date | null }>({ open: false, date: null });
   const [selected, setSelected] = useState<SchedPost | null>(null);
 
@@ -433,14 +451,53 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
   );
   const refresh = () => qc.invalidateQueries({ queryKey: qk.scheduledPosts(selectedAccountId) });
 
+  // Avance / recule le curseur d'un pas selon la vue active (mois, semaine, jour).
+  // setCursor en update fonctionnel → pas besoin de `cursor` en dépendance.
+  const stepCursor = (dir: 1 | -1) => {
+    setNav((n) => ({ dir, seq: n.seq + 1 }));
+    setCursor((c) => {
+      const d = new Date(c);
+      if (view === "Mois") d.setMonth(d.getMonth() + dir);
+      else if (view === "Semaine") d.setDate(d.getDate() + 7 * dir);
+      else d.setDate(d.getDate() + dir);
+      return d;
+    });
+  };
+
+  // Navigation clavier : ←/→ feuillettent le calendrier. Ignorée quand une
+  // saisie est active ou qu'une modale / un panneau est ouvert.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (compose.open || selected) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      if (e.key === "ArrowLeft") { e.preventDefault(); stepCursor(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); stepCursor(1); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, compose.open, selected]);
+
   if (!q.data) {
     if (q.isError && errStatus(q.error) === 400) return <ConnectPrompt onGoToSettings={onGoToSettings} message={errMessage(q.error) || undefined} />;
     if (q.isError) return <ErrorState message={errMessage(q.error) || "Erreur"} onRetry={() => q.refetch()} />;
     return <LoadingOverlay fullPage delay={0} messages={["Chargement des posts planifiés…", "Récupération depuis Meta…"]} />;
   }
 
-  const navPrev = () => { const d = new Date(cursor); if (view === "Mois") d.setMonth(d.getMonth() - 1); else if (view === "Semaine") d.setDate(d.getDate() - 7); else d.setDate(d.getDate() - 1); setCursor(d); };
-  const navNext = () => { const d = new Date(cursor); if (view === "Mois") d.setMonth(d.getMonth() + 1); else if (view === "Semaine") d.setDate(d.getDate() + 7); else d.setDate(d.getDate() + 1); setCursor(d); };
+  const navPrev = () => stepCursor(-1);
+  const navNext = () => stepCursor(1);
+  const goToday = () => { const now = new Date(); setNav((n) => ({ dir: now < cursor ? -1 : now > cursor ? 1 : 0, seq: n.seq + 1 })); setCursor(now); };
+  // La période affichée contient-elle déjà aujourd'hui ? (→ bouton "Aujourd'hui" inutile)
+  const weekStart = startOfMondayWeek(cursor);
+  const periodHasToday = view === "Mois"
+    ? (cursor.getMonth() === today.getMonth() && cursor.getFullYear() === today.getFullYear())
+    : view === "Semaine"
+      ? (today >= weekStart && today <= addDays(weekStart, 6))
+      : sameDay(cursor, today);
+  const changeView = (t: "Jour" | "Semaine" | "Mois") => { if (t === view) return; setNav((n) => ({ dir: 0, seq: n.seq + 1 })); setView(t); };
+  const calClass = nav.dir === 1 ? "ms-cal-slide ms-cal-next" : nav.dir === -1 ? "ms-cal-slide ms-cal-prev" : "ms-cal-fade";
+  const labelClass = nav.dir === 1 ? "ms-cal-label-next" : nav.dir === -1 ? "ms-cal-label-prev" : "";
   const headerLabel = view === "Mois"
     ? `${MONTHS[cursor.getMonth()]} ${cursor.getFullYear()}`
     : view === "Semaine"
@@ -472,7 +529,9 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 240 }}>
           <h2 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 24, color: "var(--tx)", margin: 0, letterSpacing: "-.01em" }}>Planning de publication</h2>
-          <p style={{ fontSize: 13.5, color: "var(--tx-dim)", margin: "6px 0 0", maxWidth: 540, lineHeight: 1.5 }}>{scheduledCount} post(s) en file, {todayCount} aujourd'hui. Clique une date pour en planifier un — Meta publie automatiquement.</p>
+          <p style={{ fontSize: 13.5, color: "var(--tx-dim)", margin: "6px 0 0", maxWidth: 560, lineHeight: 1.5 }}>{scheduledCount === 0
+            ? "Aucun post en file. Clique une date du calendrier pour planifier ta première publication ; Meta s'en charge à l'heure dite."
+            : `${scheduledCount} post${scheduledCount > 1 ? "s" : ""} en file${todayCount > 0 ? `, dont ${todayCount} aujourd'hui` : ""}. Clique une date pour en ajouter un ; Meta publie automatiquement.`}</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <MSButton variant="outline" icon={<RefreshCw size={14} />} onClick={refresh}>Rafraîchir</MSButton>
@@ -482,15 +541,19 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={navPrev} className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronLeft size={16} /></button>
-          <button onClick={navNext} className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronRight size={16} /></button>
-          <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)", padding: "0 6px", minWidth: 220, textTransform: "capitalize" }}>{headerLabel}</div>
-          <MSButton variant="outline" size="sm" onClick={() => setCursor(new Date())}>Aujourd'hui</MSButton>
+          <button onClick={navPrev} aria-label="Période précédente" title="Précédent (←)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronLeft size={16} /></button>
+          <button onClick={navNext} aria-label="Période suivante" title="Suivant (→)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronRight size={16} /></button>
+          <div style={{ padding: "0 6px", minWidth: 220, overflow: "hidden" }}>
+            <div key={`lbl-${nav.seq}`} className={labelClass} style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)", textTransform: "capitalize" }}>{headerLabel}</div>
+          </div>
+          <MSButton variant="outline" size="sm" onClick={goToday} disabled={periodHasToday} title={periodHasToday ? "Tu y es déjà" : "Revenir à aujourd'hui"}>Aujourd'hui</MSButton>
         </div>
-        <Tabs tabs={["Jour", "Semaine", "Mois"]} value={view} onChange={(t) => setView(t as "Jour" | "Semaine" | "Mois")} />
+        <Tabs tabs={["Jour", "Semaine", "Mois"]} value={view} onChange={(t) => changeView(t as "Jour" | "Semaine" | "Mois")} />
       </div>
 
-      <div>{viewNode}</div>
+      <div style={{ overflow: "hidden" }}>
+        <div key={`view-${nav.seq}`} className={calClass}>{viewNode}</div>
+      </div>
       </div>
 
       <ComposeModal open={compose.open} initialDate={compose.date} accountId={selectedAccountId}

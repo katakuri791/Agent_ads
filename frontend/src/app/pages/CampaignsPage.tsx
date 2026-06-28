@@ -45,26 +45,57 @@ function DetailStat({ label, value, color }: { label: string; value: string; col
   );
 }
 
-/** Carte « Retour sur investissement » : Dépensé · Revenu · ROAS · Profit net · ROI %.
- *  Répond directement à « j'ai dépensé X, combien ai-je gagné ? ». */
+/** Carte de résultat, ADAPTATIVE selon ce que les campagnes produisent vraiment :
+ *  ventes → Dépensé/Revenu/ROAS/Profit/ROI ; leads → Dépensé/Leads/Coût par lead/
+ *  Taux conv. ; aucune conversion → Dépensé/Clics/CPC/CTR. Aucun chiffre inventé :
+ *  on n'affiche pas un ROAS à 0 ou un ROI à −100 % quand il n'y a pas de revenu. */
 function RoiSummary({ campaigns }: { campaigns: CampaignSummary[] }) {
   const spend = campaigns.reduce((s, c) => s + (c.spend || 0), 0);
   const revenue = campaigns.reduce((s, c) => s + (c.revenue || 0), 0);
-  const roas = spend ? revenue / spend : 0;
-  const profit = revenue - spend;
-  const roi = spend ? (profit / spend) * 100 : 0;
-  const good = profit >= 0;
-  const cards: Array<{ label: string; value: string; color?: string }> = [
-    { label: "Dépensé", value: fmtMoney(spend) },
-    { label: "Revenu", value: fmtMoney(revenue), color: "#10B981" },
-    { label: "ROAS", value: `${roas.toFixed(2)}x`, color: roas >= 3 ? "#10B981" : roas >= 1 ? "#F59E0B" : "#F43F5E" },
-    { label: "Profit net", value: fmtMoney(profit), color: good ? "#10B981" : "#F43F5E" },
-    { label: "ROI", value: `${roi >= 0 ? "+" : ""}${roi.toFixed(1)}%`, color: good ? "#10B981" : "#F43F5E" },
-  ];
+  const conversions = campaigns.reduce((s, c) => s + (c.conversions || 0), 0);
+  const clicks = campaigns.reduce((s, c) => s + (c.clicks || 0), 0);
+  const impressions = campaigns.reduce((s, c) => s + (c.impressions || 0), 0);
+  const profile = revenue > 0 ? "sales" : conversions > 0 ? "leads" : "none";
+
+  let title = "Retour sur investissement";
+  let cards: Array<{ label: string; value: string; color?: string }>;
+  if (profile === "sales") {
+    const roas = spend ? revenue / spend : 0;
+    const profit = revenue - spend;
+    const roi = spend ? (profit / spend) * 100 : 0;
+    const good = profit >= 0;
+    cards = [
+      { label: "Dépensé", value: fmtMoney(spend) },
+      { label: "Revenu", value: fmtMoney(revenue), color: "#10B981" },
+      { label: "ROAS", value: `${roas.toFixed(2)}x`, color: roas >= 3 ? "#10B981" : roas >= 1 ? "#F59E0B" : "#F43F5E" },
+      { label: "Profit net", value: fmtMoney(profit), color: good ? "#10B981" : "#F43F5E" },
+      { label: "ROI", value: `${roi >= 0 ? "+" : ""}${roi.toFixed(1)}%`, color: good ? "#10B981" : "#F43F5E" },
+    ];
+  } else if (profile === "leads") {
+    title = "Performance des leads";
+    const cpl = conversions ? spend / conversions : 0;
+    const convRate = clicks ? (conversions / clicks) * 100 : 0;
+    cards = [
+      { label: "Dépensé", value: fmtMoney(spend) },
+      { label: "Leads", value: fmtNum(conversions), color: "#10B981" },
+      { label: "Coût / lead", value: fmtMoney(cpl), color: "#1877F2" },
+      { label: "Taux conv.", value: `${convRate.toFixed(2)}%`, color: "#A855F7" },
+    ];
+  } else {
+    title = "Performance";
+    const cpc = clicks ? spend / clicks : 0;
+    const ctr = impressions ? (clicks / impressions) * 100 : 0;
+    cards = [
+      { label: "Dépensé", value: fmtMoney(spend) },
+      { label: "Clics", value: fmtNum(clicks) },
+      { label: "CPC", value: fmtMoney(cpc) },
+      { label: "CTR", value: `${ctr.toFixed(2)}%` },
+    ];
+  }
   return (
     <Card pad={18}>
-      <SectionTitle>Retour sur investissement</SectionTitle>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginTop: 6 }}>
+      <SectionTitle>{title}</SectionTitle>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cards.length}, 1fr)`, gap: 12, marginTop: 6 }}>
         {cards.map((c) => (
           <div key={c.label} style={{ background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 10, padding: "12px 14px" }}>
             <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", marginBottom: 6 }}>{c.label}</div>
@@ -97,14 +128,38 @@ function CampaignDetail({ campaign, range, onClose }: { campaign: CampaignSummar
 
   if (!campaign) return null;
   const c = campaign;
-  // Header centré sur le ROI : Dépensé / Revenu / ROAS / ROI.
-  const roiColor = (c.roi ?? 0) >= 0 ? "#10B981" : "#F43F5E";
-  const mini: Array<{ label: string; value: string; color?: string }> = [
-    { label: "Dépensé", value: fmtMoney(c.spend) },
-    { label: "Revenu", value: fmtMoney(c.revenue), color: "#10B981" },
-    { label: "ROAS", value: `${(c.roas || 0).toFixed(2)}x`, color: (c.roas || 0) >= 3 ? "#10B981" : undefined },
-    { label: "ROI", value: `${(c.roi ?? 0) >= 0 ? "+" : ""}${(c.roi ?? 0).toFixed(1)}%`, color: roiColor },
-  ];
+  // Mini-stats adaptatives : ventes → Dépensé/Revenu/ROAS/ROI ; leads → Dépensé/
+  // Leads/Coût par lead/Taux conv. ; sinon → Dépensé/Clics/CPC/CTR. Pas de ROAS
+  // à 0 ni de ROI à −100 % affichés quand il n'y a pas de revenu.
+  let mini: Array<{ label: string; value: string; color?: string }>;
+  if ((c.revenue || 0) > 0) {
+    const roiColor = (c.roi ?? 0) >= 0 ? "#10B981" : "#F43F5E";
+    mini = [
+      { label: "Dépensé", value: fmtMoney(c.spend) },
+      { label: "Revenu", value: fmtMoney(c.revenue), color: "#10B981" },
+      { label: "ROAS", value: `${(c.roas || 0).toFixed(2)}x`, color: (c.roas || 0) >= 3 ? "#10B981" : undefined },
+      { label: "ROI", value: `${(c.roi ?? 0) >= 0 ? "+" : ""}${(c.roi ?? 0).toFixed(1)}%`, color: roiColor },
+    ];
+  } else if ((c.conversions || 0) > 0) {
+    const cpl = c.conversions ? c.spend / c.conversions : 0;
+    const convRate = c.clicks ? (c.conversions / c.clicks) * 100 : 0;
+    mini = [
+      { label: "Dépensé", value: fmtMoney(c.spend) },
+      { label: "Leads", value: fmtNum(c.conversions), color: "#10B981" },
+      { label: "Coût / lead", value: fmtMoney(cpl), color: "#1877F2" },
+      { label: "Taux conv.", value: `${convRate.toFixed(2)}%`, color: "#A855F7" },
+    ];
+  } else {
+    mini = [
+      { label: "Dépensé", value: fmtMoney(c.spend) },
+      { label: "Clics", value: fmtNum(c.clicks) },
+      { label: "CPC", value: fmtMoney(c.clicks ? c.spend / c.clicks : 0) },
+      { label: "CTR", value: `${(c.ctr || 0).toFixed(2)}%` },
+    ];
+  }
+  const createdLabel = c.created_time
+    ? new Date(c.created_time).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+    : null;
   const empty = (label: string) => <div style={{ padding: 28, textAlign: "center", color: "var(--tx-dim)", fontSize: 13 }}>{label}</div>;
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -112,9 +167,10 @@ function CampaignDetail({ campaign, range, onClose }: { campaign: CampaignSummar
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
           <div>
             <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)", marginBottom: 6 }}>{c.name}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <StatusBadge status={(c.status || "ACTIVE").toUpperCase()} dot />
               <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-dim)" }}>{c.id}</span>
+              {createdLabel && <span style={{ fontSize: 11.5, color: "var(--tx-dim)" }}>· Créée le {createdLabel}</span>}
             </div>
           </div>
           <button onClick={onClose} className="ms-icon-btn" style={{ width: 32, height: 32, borderRadius: 8, background: "transparent", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><X size={16} /></button>

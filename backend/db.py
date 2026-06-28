@@ -139,6 +139,10 @@ def update_meta_account(user_id: str, account_id: str, patch: dict) -> Optional[
         clean["meta_ad_account_id"] = _normalize_account_id(clean["meta_ad_account_id"])
     if not clean:
         return _get_account_row(user_id, account_id)
+    # Un token resauvegardé est présumé valide → on lève l'alerte d'expiration.
+    if clean.get("meta_access_token"):
+        clean["token_status"] = "valid"
+        clean["token_expires_hint"] = None
     clean["updated_at"] = datetime.now(timezone.utc).isoformat()
     res = (
         supabase_admin.table("meta_accounts")
@@ -148,6 +152,19 @@ def update_meta_account(user_id: str, account_id: str, patch: dict) -> Optional[
         .execute()
     )
     return res.data[0] if res.data else None
+
+
+def set_account_token_status(
+    account_id: str, status: str, expires_hint: Optional[str] = None
+) -> None:
+    """Met à jour le statut du token d'un compte (`valid` | `expired`).
+
+    Appelé par le worker de sync : lookup direct par `id` (pas de user_id — le
+    worker tourne hors contexte utilisateur)."""
+    patch: dict = {"token_status": status}
+    if expires_hint is not None:
+        patch["token_expires_hint"] = expires_hint
+    supabase_admin.table("meta_accounts").update(patch).eq("id", account_id).execute()
 
 
 def set_default_meta_account(user_id: str, account_id: str) -> Optional[dict]:

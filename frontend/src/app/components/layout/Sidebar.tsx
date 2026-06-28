@@ -40,7 +40,7 @@ export function Sidebar({ page, navigate, collapsed, setCollapsed }: {
           const Icon = n.icon;
           return (
             <button key={n.id} onClick={() => navigate(n.id)} title={collapsed ? n.label : undefined} className={"ms-nav" + (active ? " active" : "")}
-              style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, height: 40, padding: collapsed ? 0 : "0 12px", justifyContent: collapsed ? "center" : "flex-start", borderRadius: 8, border: "none", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: 13.5, fontWeight: active ? 600 : 500, background: active ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent", color: active ? "#fff" : "var(--tx-3)", transition: "background .15s, color .15s" }}>
+              style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, height: 40, padding: collapsed ? 0 : "0 12px", justifyContent: collapsed ? "center" : "flex-start", borderRadius: 8, border: "none", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: 13.5, fontWeight: active ? 600 : 500, background: active ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent", color: active ? "var(--accent)" : "var(--tx-3)", transition: "background .15s, color .15s" }}>
               {active && <span style={{ position: "absolute", left: collapsed ? 0 : -12, top: 8, bottom: 8, width: 3, borderRadius: 999, background: "var(--accent)" }} />}
               <span style={{ display: "inline-flex", color: active ? "var(--accent)" : "var(--tx-dim)" }}><Icon size={19} /></span>
               {!collapsed && <span>{n.label}</span>}

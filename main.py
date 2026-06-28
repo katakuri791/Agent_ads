@@ -24,10 +24,12 @@ from backend.agent import (
 from backend.auth import (
     get_current_user,
     login as auth_login,
+    revoke_refresh_token,
+    rotate_refresh_token,
     signup as auth_signup,
     update_user_profile,
 )
-from backend.config import CORS_ORIGINS
+from backend.config import CORS_ORIGINS, ENV, SENTRY_DSN
 from backend.db import (
     create_conversation,
     create_meta_account,
@@ -51,7 +53,7 @@ from backend.db import (
     update_meta_account,
     upsert_user_settings,
 )
-from backend import dashboard, facebook_sync, meta_pages
+from backend import dashboard, facebook_sync, meta_pages, notifications
 from backend.db import (
     get_fb_sync_state as db_get_fb_sync_state,
 )
@@ -83,14 +85,17 @@ from backend.schemas import (
     DashboardResponse,
     DashboardSeriesPoint,
     LoginRequest,
+    LogoutRequest,
     MessageOut,
     MetaAccountRequest,
     MetaAccountResponse,
     MetaSettingsRequest,
     MetaSettingsResponse,
     MetaTestResponse,
+    NotificationsResponse,
     PagePost,
     PageSummaryResponse,
+    RefreshRequest,
     ScheduledPost,
     ScheduledPostsResponse,
     SearchResponse,
@@ -105,6 +110,23 @@ from backend.schemas import (
 
 logger = logging.getLogger("metainsight")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+
+# ─── Observabilité (Sentry) ───────────────────────────────────────────────────
+# Initialisé AVANT la création de l'app pour capturer les erreurs de tout le
+# cycle de vie. Sans SENTRY_DSN (dev local), c'est un no-op total — aucune
+# dépendance réseau et capture_exception() ailleurs reste silencieux.
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[FastApiIntegration()],
+        traces_sample_rate=0.1,
+        environment=ENV,
+    )
+    logger.info("Sentry initialisé (env=%s)", ENV)
 
 
 # ─── Worker de sync Meta → Supabase (APScheduler) ─────────────────────────────
@@ -179,14 +201,50 @@ def health() -> dict:
 
 @app.post("/auth/signup", response_model=AuthResponse)
 def route_signup(body: SignupRequest) -> AuthResponse:
-    token, user = auth_signup(body.email, body.password, body.full_name)
-    return AuthResponse(access_token=token, user=user)
+    access, refresh, user = auth_signup(body.email, body.password, body.full_name)
+    return AuthResponse(access_token=access, refresh_token=refresh, user=user)
 
 
 @app.post("/auth/login", response_model=AuthResponse)
 def route_login(body: LoginRequest) -> AuthResponse:
-    token, user = auth_login(body.email, body.password)
-    return AuthResponse(access_token=token, user=user)
+    access, refresh, user = auth_login(body.email, body.password)
+    return AuthResponse(access_token=access, refresh_token=refresh, user=user)
+
+
+@app.post("/auth/refresh", response_model=AuthResponse)
+def route_refresh(body: RefreshRequest) -> AuthResponse:
+    """Renouvelle l'access token via un refresh token valide (rotation one-time use)."""
+    access, refresh, user = rotate_refresh_token(body.refresh_token)
+    return AuthResponse(access_token=access, refresh_token=refresh, user=user)
+
+
+@app.post("/auth/logout")
+def route_logout(body: LogoutRequest) -> dict:
+    """Invalide le refresh token courant côté serveur (déconnexion propre)."""
+    revoke_refresh_token(body.refresh_token)
+    return {"ok": True}
+
+
+# ─── Notifications in-app ─────────────────────────────────────────────────────
+
+
+@app.get("/notifications", response_model=NotificationsResponse)
+def route_notifications(user: UserPublic = Depends(get_current_user)) -> NotificationsResponse:
+    return NotificationsResponse(**notifications.list_notifications(user.id))
+
+
+@app.patch("/notifications/read-all")
+def route_notifications_read_all(user: UserPublic = Depends(get_current_user)) -> dict:
+    notifications.mark_all_read(user.id)
+    return {"ok": True}
+
+
+@app.patch("/notifications/{notification_id}")
+def route_notification_read(
+    notification_id: str, user: UserPublic = Depends(get_current_user)
+) -> dict:
+    notifications.mark_read(user.id, notification_id)
+    return {"ok": True}
 
 
 @app.get("/auth/me", response_model=UserPublic)
@@ -280,6 +338,7 @@ def _mask_account(row: dict) -> MetaAccountResponse:
         preferred_currency=row.get("preferred_currency"),
         timezone=row.get("timezone"),
         is_default=bool(row.get("is_default")),
+        token_status=row.get("token_status") or "valid",
     )
 
 
@@ -836,24 +895,38 @@ def route_meta_dashboard(
     revenue = _f(data.get("revenue"))
     roas = _f(data.get("roas"))
     profit = _f(data.get("profit"))
-
-    # Sans revenu remonté par Meta (aucune conversion trackée), Revenue/ROAS/Profit
-    # n'ont pas de sens : on affiche "—" plutôt que 0.00 / un profit = −Spend trompeur
-    # (aucun chiffre inventé). raw reste numérique pour ne pas casser le tri/sparkline.
-    has_revenue = revenue > 0
-    revenue_val = f"${revenue:,.2f}" if has_revenue else "—"
-    roas_val = f"{roas:.2f}x" if has_revenue else "—"
-    profit_val = f"${profit:,.2f}" if has_revenue else "—"
+    leads = _i(data.get("leads"))
+    cost_per_lead = _f(data.get("cost_per_lead"))
+    conv_rate = _f(data.get("conv_rate"))
+    profile = data.get("conversion_profile") or "none"
 
     ch = data.get("changes") or {}
+
+    # Cartes « résultat » ADAPTATIVES selon le profil réel du compte (aucun chiffre
+    # inventé — on n'affiche que ce que Meta remonte) :
+    #   • sales → Revenue / ROAS / Profit
+    #   • leads → Leads / Coût par lead / Taux de conversion
+    #   • none  → Revenue / ROAS / Profit en "—" (aucune conversion trackée)
+    if profile == "leads":
+        outcome_kpis = [
+            DashboardKpi(label="Leads", value=fmt_int(leads), raw=float(leads), change=ch.get("leads")),
+            DashboardKpi(label="Coût / lead", value=f"${cost_per_lead:,.2f}", raw=cost_per_lead),
+            DashboardKpi(label="Taux conv.", value=f"{conv_rate:.2f}%", raw=conv_rate),
+        ]
+    else:
+        has_revenue = profile == "sales"
+        outcome_kpis = [
+            DashboardKpi(label="Revenue", value=f"${revenue:,.2f}" if has_revenue else "—", raw=revenue, change=ch.get("revenue")),
+            DashboardKpi(label="ROAS", value=f"{roas:.2f}x" if has_revenue else "—", raw=roas),
+            DashboardKpi(label="Profit", value=f"${profit:,.2f}" if has_revenue else "—", raw=profit),
+        ]
+
     kpis = [
         DashboardKpi(label="Impressions", value=fmt_int(impressions), raw=impressions, change=ch.get("impressions")),
         DashboardKpi(label="Clicks", value=fmt_int(clicks), raw=clicks, change=ch.get("clicks")),
         DashboardKpi(label="Reach", value=fmt_int(reach), raw=reach, change=ch.get("reach")),
         DashboardKpi(label="Spend", value=f"${spend:,.2f}", raw=spend, change=ch.get("spend")),
-        DashboardKpi(label="Revenue", value=revenue_val, raw=revenue, change=ch.get("revenue")),
-        DashboardKpi(label="ROAS", value=roas_val, raw=roas),
-        DashboardKpi(label="Profit", value=profit_val, raw=profit),
+        *outcome_kpis,
         DashboardKpi(label="CTR", value=f"{ctr:.2f}%", raw=ctr, change=ch.get("ctr")),
         DashboardKpi(label="CPC", value=f"${cpc:.2f}", raw=cpc, change=ch.get("cpc")),
         DashboardKpi(label="CPM", value=f"${cpm:.2f}", raw=cpm, change=ch.get("cpm")),
@@ -1014,7 +1087,8 @@ async def route_sync_account(
         await asyncio.to_thread(facebook_sync.sync_account, acct)
     except Exception as exc:
         logger.exception("manual sync failed for account %s", acct["id"])
-        # L'état d'erreur est enregistré par le worker ; on renvoie un 502 lisible.
+        # Enregistre l'état d'erreur + détecte un token expiré (alerte UI), puis 502.
+        await asyncio.to_thread(facebook_sync.record_sync_error, acct, exc)
         raise HTTPException(status_code=502, detail=f"Sync échoué : {exc}")
     return _sync_status(acct)
 
@@ -1323,14 +1397,21 @@ def route_chat(body: ChatRequest, user: UserPublic = Depends(get_current_user)) 
     else:
         last_error = persist.get("last_error") if persist else None
         if last_error:
+            campaign_name = last_error.get("name", "(campagne sans nom)")
             save_campaign_failure(
                 user_id=user.id,
-                name=last_error.get("name", "(campagne sans nom)"),
+                name=campaign_name,
                 objective=last_error.get("objective"),
                 daily_budget=last_error.get("daily_budget"),
                 error_log=last_error.get("error_message", ""),
                 stage=last_error.get("stage"),
                 request_id=last_error.get("request_id"),
+            )
+            notifications.create_notification(
+                user.id,
+                "campaign_failed",
+                f"Échec de création : {campaign_name}",
+                last_error.get("error_message") or "La création de la campagne a échoué.",
             )
 
     touch_conversation(conversation_id)

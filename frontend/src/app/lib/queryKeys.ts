@@ -23,6 +23,7 @@ export const qk = {
   scheduledPosts: (accountId: string | null) => ["scheduled-posts", accountId] as const,
   conversations: ["conversations"] as const,
   messages: (id: string) => ["messages", id] as const,
+  notifications: ["notifications"] as const,
 };
 
 /** Convertit la plage de dates globale (façon Meta Ads) en paramètres acceptés

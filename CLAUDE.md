@@ -110,6 +110,25 @@ pnpm dev
 pnpm build
 ```
 
+### Tests
+```bash
+# Backend (pytest) — depuis la racine
+uv run pytest tests/ -v
+
+# Frontend (Vitest) — depuis frontend/
+pnpm test            # ou : pnpm exec vitest run
+```
+
+### Docker (dév local : API + Redis)
+```bash
+docker compose up --build       # API sur :8000 + Redis sur :6379
+docker build -t admind-api .    # build de l'image backend seule
+```
+
+### CI
+`.github/workflows/ci.yml` lance à chaque push (main/develop/ads_v3) et PR :
+backend (`uv sync` + `pytest`) et frontend (`pnpm install` + `vitest` + `vite build`).
+
 ### Accès
 - Backend API : `http://localhost:8000`
 - Docs API (Swagger) : `http://localhost:8000/docs`
@@ -132,6 +151,13 @@ SUPABASE_SERVICE_KEY=eyJ...       # clé service role (admin)
 
 # JWT (optionnel — auto-généré si absent)
 JWT_SECRET=...
+
+# Observabilité (optionnel)
+SENTRY_DSN=                       # vide → Sentry désactivé (no-op)
+ENV=development                   # environnement signalé à Sentry
+
+# Rate limiter (optionnel — requis en multi-worker)
+REDIS_URL=redis://localhost:6379/0   # injoignable → fail-open (limiteur désactivé)
 ```
 
 ### `frontend/.env.local`
@@ -148,8 +174,10 @@ Les credentials Meta Ads (token, account ID, page ID, pixel ID) sont stockés **
 ### Auth
 | Méthode | Route | Description |
 |---------|-------|-------------|
-| POST | `/auth/signup` | Créer un compte (email, password, full_name) |
-| POST | `/auth/login` | Connexion → retourne JWT |
+| POST | `/auth/signup` | Créer un compte (email, password, full_name) → access + refresh token |
+| POST | `/auth/login` | Connexion → access token (24h) + refresh token (30j) |
+| POST | `/auth/refresh` | Renouvelle l'access token via refresh token (rotation one-time use) |
+| POST | `/auth/logout` | Invalide le refresh token courant |
 | GET | `/auth/me` | Profil utilisateur courant |
 | PATCH | `/auth/me` | Modifier profil (full_name, first_name, last_name, company, avatar_url) |
 

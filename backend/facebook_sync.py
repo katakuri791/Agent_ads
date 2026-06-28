@@ -19,7 +19,7 @@ from typing import Any, Optional
 from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.exceptions import FacebookRequestError
 
-from . import db, metrics
+from . import db, metrics, notifications
 from .config import supabase_admin
 from .meta_tools import _init_api, _safe_float, _safe_int
 
@@ -142,7 +142,7 @@ def _sync_campaigns(account: AdAccount, account_id: str) -> None:
     rows = []
     for c in account.get_campaigns(
         fields=["name", "objective", "status", "daily_budget", "lifetime_budget",
-                "start_time", "stop_time"]
+                "created_time", "start_time", "stop_time"]
     ):
         rows.append({
             "id": c.get("id"),
@@ -152,6 +152,7 @@ def _sync_campaigns(account: AdAccount, account_id: str) -> None:
             "status": c.get("status"),
             "daily_budget": _budget_units(c.get("daily_budget")),
             "lifetime_budget": _budget_units(c.get("lifetime_budget")),
+            "created_time": c.get("created_time"),
             "start_time": c.get("start_time"),
             "stop_time": c.get("stop_time"),
             "updated_at": _now_iso(),
@@ -283,6 +284,95 @@ def _sync_breakdowns(account: AdAccount, account_id: str, windows: list[tuple[st
                            exc.api_error_message() or exc)
 
 
+# ─── Détection token Meta expiré ──────────────────────────────────────────────
+
+# OAuthException : tout problème de token Meta remonte avec le code 190. Les
+# sous-codes précisent la cause. On marque alors le compte token_status='expired'
+# pour qu'une bannière UI invite l'utilisateur à renouveler son token.
+_TOKEN_ERROR_CODE = 190
+_TOKEN_SUBCODES = {463: "expired", 460: "password_changed"}
+
+
+def _classify_token_error(exc: Exception) -> Optional[str]:
+    """Retourne une raison ('expired' | 'password_changed' | 'invalid') si l'erreur
+    Meta indique un token mort, sinon None (erreur transitoire / autre).
+
+    Duck-typing sur `api_error_code()`/`api_error_subcode()` (présents sur
+    FacebookRequestError) : une exception générique sans ces méthodes → None.
+    Évite une dépendance dure au SDK et reste testable sans Supabase."""
+    code_fn = getattr(exc, "api_error_code", None)
+    if not callable(code_fn):
+        return None
+    try:
+        code = code_fn()
+    except Exception:  # noqa: BLE001 — le SDK peut ne pas exposer le code
+        return None
+    if code != _TOKEN_ERROR_CODE:
+        return None
+    subcode = None
+    sub_fn = getattr(exc, "api_error_subcode", None)
+    if callable(sub_fn):
+        try:
+            subcode = sub_fn()
+        except Exception:  # noqa: BLE001
+            subcode = None
+    return _TOKEN_SUBCODES.get(subcode, "invalid")
+
+
+def record_sync_error(account: dict, exc: Exception) -> None:
+    """Enregistre l'échec d'un sync : état d'erreur dans `fb_sync_state` et, si
+    c'est un token mort, marque le compte `token_status='expired'` (alerte UI).
+
+    Utilisé par le worker (sync_all_accounts) ET par l'endpoint de sync manuel."""
+    ad_account_id = account.get("meta_ad_account_id")
+    msg = exc.api_error_message() if isinstance(exc, FacebookRequestError) else str(exc)
+    if ad_account_id:
+        try:
+            db.set_fb_sync_state(
+                ad_account_id,
+                last_sync_at=_now_iso(),
+                last_sync_status="error",
+                last_error=(msg or "Erreur inconnue")[:1000],
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("fb_sync: could not record error state for %s", ad_account_id)
+    user_id = account.get("user_id")
+    label = account.get("label") or "compte Meta"
+    reason = _classify_token_error(exc)
+    if reason and account.get("id"):
+        try:
+            db.set_account_token_status(account["id"], "expired")
+            logger.warning(
+                "fb_sync: token mort pour le compte %s (raison=%s)", account["id"], reason
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("fb_sync: could not flag token for %s", account["id"])
+        if user_id:
+            notifications.create_notification(
+                user_id,
+                "token_expired",
+                f"Token Meta expiré — {label}",
+                "La synchronisation est interrompue. Mets à jour le token dans Paramètres.",
+                dedup=True,
+            )
+    elif reason is None:
+        # Erreur de sync inattendue (≠ token expiré) → Sentry (no-op sans DSN).
+        try:
+            import sentry_sdk
+
+            sentry_sdk.capture_exception(exc)
+        except Exception:  # noqa: BLE001 — l'observabilité ne doit jamais casser le sync
+            pass
+        if user_id:
+            notifications.create_notification(
+                user_id,
+                "sync_error",
+                f"Échec de synchronisation — {label}",
+                (msg or "Erreur inconnue")[:300],
+                dedup=True,
+            )
+
+
 # ─── Point d'entrée par compte / global ───────────────────────────────────────
 
 
@@ -320,6 +410,12 @@ def sync_account(account: dict) -> dict:
         last_error=None,
         insights_synced_until=date.today().isoformat(),
     )
+    # Sync réussi → le token est forcément valide : on lève toute alerte résiduelle.
+    if account.get("id"):
+        try:
+            db.set_account_token_status(account["id"], "valid")
+        except Exception:  # noqa: BLE001
+            logger.exception("fb_sync: could not clear token flag for %s", account.get("id"))
     return db.get_fb_sync_state(ad_account_id) or {}
 
 
@@ -349,16 +445,7 @@ def sync_all_accounts() -> dict:
             ok += 1
         except Exception as exc:  # noqa: BLE001 — on isole CHAQUE compte
             errors += 1
-            msg = exc.api_error_message() if isinstance(exc, FacebookRequestError) else str(exc)
             logger.exception("fb_sync: ad account %s failed", ad_account_id)
-            try:
-                db.set_fb_sync_state(
-                    ad_account_id,
-                    last_sync_at=_now_iso(),
-                    last_sync_status="error",
-                    last_error=(msg or "Erreur inconnue")[:1000],
-                )
-            except Exception:
-                logger.exception("fb_sync: could not record error state for %s", ad_account_id)
+            record_sync_error(acct, exc)
     logger.info("fb_sync: done (ok=%d, errors=%d)", ok, errors)
     return {"ok": ok, "errors": errors, "total": len(accounts)}

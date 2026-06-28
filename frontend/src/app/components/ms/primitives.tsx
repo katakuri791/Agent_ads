@@ -57,6 +57,7 @@ export function KPICard({ kpi, idx = 0, color = "var(--accent)", decorate = true
     <div ref={ref} className="ms-card ms-kpi" onMouseMove={onMove} onMouseLeave={onLeave}
       style={{ position: "relative", overflow: "hidden", background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 18, padding: 18, display: "flex", flexDirection: "column", gap: 8, minWidth: 0, opacity: show ? 1 : 0, transform: liftTransform, transition: `opacity .5s ${EASE.smooth}, transform .35s ${EASE.springSoft}, border-color .2s, box-shadow .3s`, boxShadow: tilt.lift ? "0 18px 44px rgba(0,0,0,.28)" : "0 0 0 transparent", transformStyle: "preserve-3d" }}>
       {decorate && <Blob kind={deco.kind} color={deco.color} opacity={0.14} size={90} top={-18} right={-14} rotate={-10 + (idx % 3) * 6} />}
+      <span className="ms-kpi-sheen" style={{ ["--sheen-delay" as string]: `${120 + idx * 70}ms` }} aria-hidden />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, position: "relative" }}>
         <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--tx-dim)", fontWeight: 500 }}>{kpi.label}</span>
         {kpi.change != null && <ChangeBadge change={kpi.change} dir={kpi.dir} />}
@@ -75,11 +76,13 @@ const BADGE: Record<string, [string, string, string]> = {
   Valid: ["#22C55E", "#22C55E15", "#22C55E30"], Expired: ["#EF4444", "#EF444415", "#EF444430"], Error: ["#F59E0B", "#F59E0B15", "#F59E0B30"],
   Custom: ["var(--accent)", "color-mix(in srgb, var(--accent) 8%, transparent)", "color-mix(in srgb, var(--accent) 19%, transparent)"], Lookalike: ["#A855F7", "#A855F715", "#A855F730"], Saved: ["var(--tx-3)", "#6B728020", "#6B728040"], "Special Ad": ["#F59E0B", "#F59E0B15", "#F59E0B30"],
 };
+const LIVE_STATUS = new Set(["ACTIVE", "Ready", "Valid"]);
 export function StatusBadge({ status, dot = false }: { status: string; dot?: boolean }) {
   const [c, bg, bd] = BADGE[status] || BADGE.ARCHIVED;
+  const live = LIVE_STATUS.has(status);
   return (
     <span className="ms-chip-hover" style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 500, color: c, background: bg, border: "1px solid " + bd, borderRadius: 999, padding: "2px 9px", whiteSpace: "nowrap" }}>
-      {dot && <span style={{ width: 5, height: 5, borderRadius: 999, background: c }} />}
+      {dot && <span className={live ? "ms-live" : undefined} style={{ width: 5, height: 5, borderRadius: 999, background: c, color: c }} />}
       {status}
     </span>
   );
@@ -212,7 +215,7 @@ export function DateRangePicker({ label, activePreset, onChange }: {
     onChange({ since: s, until: u }, s === u ? s : `${s} → ${u}`);
     setOpen(false);
   };
-  const inputStyle: CSSProperties = { height: 34, background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 7, padding: "0 8px", fontSize: 12.5, color: "var(--tx-2)", fontFamily: "IBM Plex Sans", colorScheme: "dark", outline: "none", width: "100%" };
+  const inputStyle: CSSProperties = { height: 34, background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 7, padding: "0 8px", fontSize: 12.5, color: "var(--tx-2)", fontFamily: "IBM Plex Sans", colorScheme: "inherit", outline: "none", width: "100%" };
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button className="ms-btn" onClick={() => setOpen((o) => !o)}
@@ -278,7 +281,7 @@ export function SlidePanel({ open, onClose, children, width = 480 }: { open: boo
 export function EmptyState({ icon, title, subtitle, cta, onCta }: { icon?: ReactNode; title: string; subtitle?: string; cta?: string; onCta?: () => void }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "64px 20px", gap: 6 }}>
-      <div style={{ width: 64, height: 64, borderRadius: 16, background: "color-mix(in srgb, var(--accent) 7%, transparent)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", marginBottom: 10 }}>
+      <div className="ms-empty-icon" style={{ width: 64, height: 64, borderRadius: 16, background: "color-mix(in srgb, var(--accent) 7%, transparent)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", marginBottom: 10 }}>
         {icon || <Inbox size={30} />}
       </div>
       <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)" }}>{title}</div>
@@ -367,7 +370,7 @@ export function LoadingOverlay({
           alignItems: "center",
           gap: 14,
           padding: "26px 34px",
-          background: "#121417",
+          background: "var(--surf-card)",
           border: "1px solid var(--bd)",
           borderRadius: 14,
           boxShadow: "0 12px 32px rgba(0,0,0,0.50)",

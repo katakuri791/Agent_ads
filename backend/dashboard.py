@@ -133,6 +133,21 @@ def get_account_dashboard(
     roas = round(revenue / spend, 2) if spend else 0.0
     profit = round(revenue - spend, 2)
 
+    # Profil de conversion du compte (données réelles agrégées) : un compte qui
+    # génère des leads sans aucun revenu d'achat se juge au coût par lead, pas au
+    # ROAS. main.py choisit les cartes KPI à afficher en fonction de ce profil.
+    leads = _safe_int(summary.get("leads"))
+    purchases = _safe_int(summary.get("purchases"))
+    clicks = kpi_row["clicks"]
+    cost_per_lead = round(spend / leads, 2) if leads else 0.0
+    conv_rate = round(leads / clicks * 100, 2) if clicks else 0.0
+    if revenue > 0:
+        conversion_profile = "sales"
+    elif leads > 0:
+        conversion_profile = "leads"
+    else:
+        conversion_profile = "none"
+
     def _chg(field: str, *, integer: bool = False) -> Optional[float]:
         if not prev_start:
             return None
@@ -150,6 +165,7 @@ def get_account_dashboard(
         "cpc": _chg("cpc"),
         "cpm": _chg("cpm"),
         "revenue": None if not prev_start else _pct_change(revenue, prev_revenue),
+        "leads": _chg("leads", integer=True),
     }
 
     series = []
@@ -168,6 +184,9 @@ def get_account_dashboard(
             # Métriques dérivées par jour (données réelles, calculées — pas de fake).
             "revenue": d_revenue,
             "profit": round(d_revenue - d_spend, 2),
+            # `conversions` SQL = purchases + leads ; pour un compte lead (0 achat)
+            # c'est exactement les leads → sert de courbe de tendance à la sparkline.
+            "leads": _safe_float(r.get("conversions")),
             "cpc": round(d_spend / d_clicks, 2) if d_clicks else 0.0,
             "cpm": round(d_spend / d_impr * 1000, 2) if d_impr else 0.0,
             "roas": round(d_revenue / d_spend, 2) if d_spend else 0.0,
@@ -187,6 +206,11 @@ def get_account_dashboard(
         "revenue": revenue,
         "roas": roas,
         "profit": profit,
+        "leads": leads,
+        "purchases": purchases,
+        "cost_per_lead": cost_per_lead,
+        "conv_rate": conv_rate,
+        "conversion_profile": conversion_profile,
     }
 
 
@@ -206,6 +230,7 @@ def _campaign_row(r: dict) -> dict[str, Any]:
         "name": r.get("name"),
         "objective": r.get("objective"),
         "status": r.get("status"),
+        "created_time": r.get("created_time"),
         "daily_budget": _safe_float(daily_budget) if daily_budget is not None else None,
         "impressions": _safe_int(r.get("impressions")),
         "clicks": _safe_int(r.get("clicks")),

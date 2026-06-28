@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -35,6 +36,72 @@ def create_jwt(user_id: str) -> str:
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRES_HOURS),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+# ─── Refresh tokens (sessions longues, rotation one-time use) ─────────────────
+
+REFRESH_EXPIRES_DAYS = 30
+
+
+def _parse_ts(value) -> datetime:
+    """Parse un timestamp Supabase (str ISO, parfois 'Z' ou naïf) en datetime aware."""
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def create_refresh_token(user_id: str) -> str:
+    """Génère un refresh token opaque (64 hex) et le persiste avec une expiration
+    à 30 jours. Renvoyé au client, qui le stocke pour renouveler l'access token."""
+    token = uuid.uuid4().hex + uuid.uuid4().hex
+    expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_EXPIRES_DAYS)
+    supabase_admin.table("refresh_tokens").insert(
+        {"user_id": user_id, "token": token, "expires_at": expires_at.isoformat()}
+    ).execute()
+    return token
+
+
+def rotate_refresh_token(refresh_token: str) -> tuple[str, str, UserPublic]:
+    """Valide un refresh token, l'invalide (one-time use), puis émet un NOUVEAU
+    couple (access, refresh). Lève 401 si introuvable / expiré.
+
+    L'ancien token est supprimé AVANT toute autre vérif : même expiré ou rejoué,
+    il ne pourra plus servir (défense contre le rejeu d'un token volé)."""
+    res = (
+        supabase_admin.table("refresh_tokens")
+        .select("*")
+        .eq("token", refresh_token)
+        .limit(1)
+        .execute()
+    )
+    row = res.data[0] if res.data else None
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    # One-time use : on supprime immédiatement, qu'il soit valide ou non.
+    supabase_admin.table("refresh_tokens").delete().eq("token", refresh_token).execute()
+
+    if _parse_ts(row["expires_at"]) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+
+    user_id = row["user_id"]
+    user_res = (
+        supabase_admin.table("users").select("*").eq("id", user_id).limit(1).execute()
+    )
+    if not user_res.data:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    new_access = create_jwt(user_id)
+    new_refresh = create_refresh_token(user_id)
+    return new_access, new_refresh, _user_row_to_public(user_res.data[0])
+
+
+def revoke_refresh_token(refresh_token: str) -> None:
+    """Invalide un refresh token (logout). Idempotent — pas d'erreur si absent."""
+    supabase_admin.table("refresh_tokens").delete().eq("token", refresh_token).execute()
 
 
 def decode_jwt(token: str) -> str:
@@ -90,9 +157,13 @@ def update_user_profile(user_id: str, patch: dict) -> UserPublic:
         if composed:
             clean.setdefault("full_name", composed)
 
+    # Select "*" (not named columns): on a DB where first_name/last_name/company
+    # haven't been migrated yet, naming them here makes Postgres reject the whole
+    # query (42703) before we ever reach the graceful-degradation logic below.
+    # "*" returns whatever columns actually exist, so existing_cols is truthful.
     res = (
         supabase_admin.table("users")
-        .select("id, email, full_name, avatar_url, first_name, last_name, company")
+        .select("*")
         .eq("id", user_id)
         .limit(1)
         .execute()
@@ -133,7 +204,7 @@ def update_user_profile(user_id: str, patch: dict) -> UserPublic:
     return _user_row_to_public(res.data[0])
 
 
-def signup(email: str, password: str, full_name: Optional[str]) -> tuple[str, UserPublic]:
+def signup(email: str, password: str, full_name: Optional[str]) -> tuple[str, str, UserPublic]:
     existing = (
         supabase_admin.table("users").select("id").eq("email", email).execute()
     )
@@ -152,11 +223,12 @@ def signup(email: str, password: str, full_name: Optional[str]) -> tuple[str, Us
         .execute()
     )
     row = inserted.data[0]
-    token = create_jwt(row["id"])
-    return token, _user_row_to_public(row)
+    access = create_jwt(row["id"])
+    refresh = create_refresh_token(row["id"])
+    return access, refresh, _user_row_to_public(row)
 
 
-def login(email: str, password: str) -> tuple[str, UserPublic]:
+def login(email: str, password: str) -> tuple[str, str, UserPublic]:
     res = (
         supabase_admin.table("users")
         .select("*")
@@ -169,8 +241,9 @@ def login(email: str, password: str) -> tuple[str, UserPublic]:
     row = res.data[0]
     if not verify_password(password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    token = create_jwt(row["id"])
-    return token, _user_row_to_public(row)
+    access = create_jwt(row["id"])
+    refresh = create_refresh_token(row["id"])
+    return access, refresh, _user_row_to_public(row)
 
 
 def get_current_user(
