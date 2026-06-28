@@ -34,6 +34,7 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
     else if (lbl.includes("click")) sparkData = ser.map((s) => s.clicks);
     else if (lbl.includes("ctr")) sparkData = ser.map((s) => s.ctr);
     else if (lbl.includes("reach")) sparkData = ser.map((s) => s.reach);
+    else if (lbl.startsWith("lead")) sparkData = ser.map((s) => s.leads);
     else if (lbl.includes("revenue")) sparkData = ser.map((s) => s.revenue);
     else if (lbl.includes("profit")) sparkData = ser.map((s) => s.profit);
     else if (lbl.includes("roas")) sparkData = ser.map((s) => s.roas);
@@ -75,25 +76,25 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
         <MSButton variant="outline" size="sm" icon={<RefreshCw size={14} />} onClick={() => { dash.refetch(); camps.refetch(); }} disabled={loading}>Rafraîchir</MSButton>
       </div>
       {error && <ErrorBanner message={error} onRetry={() => dash.refetch()} />}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+      <div className="ov-kpis">
         {kpis.length === 0
-          ? <div style={{ gridColumn: "1 / -1", textAlign: "center", color: "var(--tx-dim)", fontSize: 13, padding: 30 }}>No data for the selected period.</div>
-          : kpis.map((k, i) => <KPICard key={k.label} kpi={k} idx={i} />)}
+          ? <div style={{ gridColumn: "1 / -1", textAlign: "center", color: "var(--tx-dim)", fontSize: 13, padding: 30 }}>Aucune donnée sur la période sélectionnée.</div>
+          : kpis.map((k, i) => <KPICard key={k.label} kpi={k} idx={i} decorate={false} />)}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 20 }}>
+      <div className="ov-row ov-row-a">
         <Card pad={20}>
-          <SectionTitle right={<span style={{ fontSize: 12, color: "var(--tx-dim)", fontFamily: "JetBrains Mono" }}>{rangeLabel}</span>}>Spend &amp; Impressions</SectionTitle>
+          <SectionTitle right={<span style={{ fontSize: 12, color: "var(--tx-dim)", fontFamily: "JetBrains Mono" }}>{rangeLabel}</span>}>Dépenses &amp; Impressions</SectionTitle>
           <div style={{ display: "flex", gap: 18, marginBottom: 8, fontSize: 12 }}>
-            <span style={{ color: "var(--tx-3)" }}><span style={{ color: "var(--accent)" }}>● </span>Spend</span>
+            <span style={{ color: "var(--tx-3)" }}><span style={{ color: "var(--accent)" }}>● </span>Dépenses</span>
             <span style={{ color: "var(--tx-3)" }}><span style={{ color: "#22C55E" }}>● </span>Impressions</span>
           </div>
           <LineChart series={series} height={280} />
         </Card>
         <Card pad={20}>
-          <SectionTitle>Objective Breakdown</SectionTitle>
+          <SectionTitle>Répartition par objectif</SectionTitle>
           {objectives.length === 0 ? (
-            <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontSize: 13 }}>No campaign data.</div>
+            <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontSize: 13 }}>Aucune donnée de campagne.</div>
           ) : (
             <>
               <DonutChart data={objectives} size={180} />
@@ -113,15 +114,15 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
         </Card>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 20 }}>
+      <div className="ov-row ov-row-b">
         <Card pad={20}>
-          <SectionTitle>Top Campaigns</SectionTitle>
+          <SectionTitle>Meilleures campagnes</SectionTitle>
           <div>
             <div style={{ display: "grid", gridTemplateColumns: "2fr 0.9fr 0.9fr 0.7fr 0.7fr", gap: 8, padding: "0 10px 8px", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", borderBottom: "1px solid var(--bd)" }}>
-              {["Campaign", "Status", "Spend", "ROAS", "Conv."].map((c, i) => <span key={i} style={{ textAlign: i > 1 ? "right" : "left" }}>{c}</span>)}
+              {["Campagne", "Statut", "Dépense", "ROAS", "Conv."].map((c, i) => <span key={i} style={{ textAlign: i > 1 ? "right" : "left" }}>{c}</span>)}
             </div>
             {topCampaigns.length === 0
-              ? <div style={{ padding: 24, textAlign: "center", color: "var(--tx-dim)", fontSize: 13 }}>No active campaigns.</div>
+              ? <div style={{ padding: 24, textAlign: "center", color: "var(--tx-dim)", fontSize: 13 }}>Aucune campagne active.</div>
               : topCampaigns.map((c, i) => (
                 <div key={c.id || i} className="ms-trow" style={{ display: "grid", gridTemplateColumns: "2fr 0.9fr 0.9fr 0.7fr 0.7fr", gap: 8, alignItems: "center", padding: "11px 10px", borderRadius: 8, fontSize: 13.5 }}>
                   <span style={{ display: "flex", alignItems: "center", gap: 9, overflow: "hidden" }}>
@@ -137,7 +138,7 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
           </div>
         </Card>
         <Card pad={20}>
-          <SectionTitle>Spend by Geography</SectionTitle>
+          <SectionTitle>Dépenses par zone</SectionTitle>
           <WorldMap data={data.geo_breakdown || []} height={300} />
         </Card>
       </div>

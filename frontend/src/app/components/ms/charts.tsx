@@ -1,6 +1,6 @@
 // MetaScope bespoke SVG charts (ported from the prototype's charts.jsx).
 // Self-contained, animated, dependency-free — kept faithful to the design.
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useId } from "react";
 import { fmtMoney, fmtNum } from "../../lib/format";
 
 // Age × gender datum used by GroupedBar (real data from campaign/account insights).
@@ -24,7 +24,9 @@ export function Sparkline({ data, color = "var(--accent)", height = 40, fill = t
   ]);
   const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
   const area = line + ` L${w - pad} ${height} L${pad} ${height} Z`;
-  const id = "spk" + color.replace("#", "") + Math.round(height);
+  // id stable + unique par instance, sans caractères invalides (la couleur peut être
+  // `var(--accent)` → parenthèses qui cassaient `url(#…)` et rendaient l'aire en noir).
+  const id = "spk" + useId().replace(/:/g, "");
   return (
     <svg viewBox={`0 0 ${w} ${height}`} width="100%" height={height} preserveAspectRatio="none" style={{ display: "block" }}>
       {fill && (

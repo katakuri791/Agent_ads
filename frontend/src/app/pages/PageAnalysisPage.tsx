@@ -108,12 +108,12 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <h2 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 24, color: "var(--tx)", margin: 0, letterSpacing: "-.01em" }}>{info?.name || "Facebook Page"}</h2>
+              <h2 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 24, color: "#fff", margin: 0, letterSpacing: "-.01em" }}>{info?.name || "Facebook Page"}</h2>
               {info?.category && <span style={{ fontSize: 11.5, color: "var(--accent)", background: "color-mix(in srgb, var(--accent) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)", borderRadius: 999, padding: "3px 10px" }}>{info.category}</span>}
             </div>
             <div style={{ display: "flex", gap: 24, marginTop: 12 }}>
-              <span style={{ fontSize: 13.5, color: "var(--tx-2)" }}><b style={{ fontFamily: "DM Sans", color: "var(--tx)" }}>{fmtNum(followers)}</b> followers</span>
-              {info?.link && <a href={info.link} target="_blank" rel="noreferrer" style={{ fontSize: 13.5, color: "var(--accent)", display: "inline-flex", alignItems: "center", gap: 5 }}>View page <ExternalLink size={12} /></a>}
+              <span style={{ fontSize: 13.5, color: "rgba(255,255,255,.72)" }}><b style={{ fontFamily: "DM Sans", color: "#fff" }}>{fmtNum(followers)}</b> followers</span>
+              {info?.link && <a href={info.link} target="_blank" rel="noreferrer" style={{ fontSize: 13.5, color: "#fff", display: "inline-flex", alignItems: "center", gap: 5 }}>View page <ExternalLink size={12} /></a>}
             </div>
           </div>
           <button onClick={() => setComposerOpen(true)} className="ms-btn-primary" style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", borderRadius: 10, border: "none", background: "var(--accent)", color: "#fff", fontSize: 13.5, fontWeight: 600, cursor: "pointer", boxShadow: "0 8px 24px rgba(24,119,242,.35)" }}>

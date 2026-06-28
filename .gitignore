@@ -20,3 +20,9 @@ dist/
 /uv.lock
 .claude/
 .impeccable
+.gstack/
+
+# Artefacts de travail hors-code (non versionnés)
+Nouveau dossier/
+AdMind-Vault/
+modificatio.md

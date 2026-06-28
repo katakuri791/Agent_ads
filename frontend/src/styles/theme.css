@@ -17,7 +17,7 @@
   --secondary: #1A1D24;
   --secondary-foreground: #D1D5DB;
   --muted: #14171D;
-  --muted-foreground: #6B7280;
+  --muted-foreground: #7C8492;
   --accent: #1877F2;
   --accent-foreground: #FFFFFF;
   --destructive: #EF4444;
@@ -57,7 +57,7 @@
   --secondary: #1A1D24;
   --secondary-foreground: #D1D5DB;
   --muted: #14171D;
-  --muted-foreground: #6B7280;
+  --muted-foreground: #7C8492;
   --accent: #1877F2;
   --accent-foreground: #FFFFFF;
   --destructive: #EF4444;
@@ -108,7 +108,7 @@
   --tx-2: #D1D5DB;
   --tx-2b: #CBD5E1;
   --tx-3: #9AA1AC;
-  --tx-dim: #6B7280;
+  --tx-dim: #7C8492;   /* relevé de #6B7280 → ≥4.5:1 sur les cartes (AA) */
   --tx-faint: #4B5260;
   color-scheme: dark;
 }
@@ -132,7 +132,7 @@
   --tx-2: #D1D5DB;
   --tx-2b: #CBD5E1;
   --tx-3: #9AA1AC;
-  --tx-dim: #6B7280;
+  --tx-dim: #868D9B;   /* cartes Dim plus claires → relevé pour rester ≥4.5:1 */
   --tx-faint: #4B5260;
   color-scheme: dark;
 }
@@ -323,15 +323,31 @@
 @keyframes msShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
 /* nav + interactive hovers */
+/* Transition de base : sans elle le survol « snappe » brutalement (D4). */
+.ms-nav, .ms-nav-danger { transition: background .15s ease, color .15s ease; }
 .ms-nav:hover { background: var(--hover) !important; color: var(--tx-2) !important; }
 .ms-nav.active:hover { background: color-mix(in srgb, var(--accent) 13%, transparent) !important; }
+/* Variante danger (déconnexion) : garde le rouge au survol au lieu de virer au gris. */
+.ms-nav-danger:hover { background: color-mix(in srgb, #EF4444 12%, transparent) !important; color: #EF4444 !important; }
 .ms-menu-item:hover { background: var(--hover) !important; }
 .ms-convo:hover { background: var(--hover) !important; }
-.ms-btn { transition: filter .15s, background .15s, transform .12s cubic-bezier(.4,0,.2,1); }
-.ms-btn:hover { filter: brightness(1.12); }
+.ms-btn { transition: filter .15s, background .15s, border-color .15s, transform .12s cubic-bezier(.4,0,.2,1); }
+/* D1 : le hover doit changer le FOND/bordure (token), pas la luminosité — `brightness`
+   sur une surface déjà claire (thème Light, boutons outline/ghost/soft) est invisible. */
+.ms-btn-outline:hover, .ms-btn-soft:hover { background: var(--hover) !important; border-color: var(--bd-strong) !important; }
+.ms-btn-ghost:hover { background: var(--hover) !important; }
 .ms-btn:active { transform: translateY(1px) scale(.97); }
 .ms-btn:disabled { transform: none; }
 .ms-btn-primary:hover { filter: none; background: #1565D8 !important; }
+
+/* D2/D3 : feedback de survol sur cartes API, vignettes de thème et pastilles d'accent
+   (Settings) — éléments auparavant sans aucun état hover. */
+.ms-acct-card { transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.ms-acct-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--bd)) !important; box-shadow: 0 8px 24px rgba(0,0,0,.18); transform: translateY(-1px); }
+.ms-theme-tile { transition: border-color .15s ease, background .15s ease, transform .15s ease; }
+.ms-theme-tile:hover { border-color: var(--bd-strong) !important; transform: translateY(-2px); }
+.ms-swatch { transition: transform .15s ease, box-shadow .15s ease; }
+.ms-swatch:hover { transform: scale(1.12); box-shadow: 0 4px 12px rgba(0,0,0,.25); }
 .ms-icon-btn { transition: background .15s, color .15s, transform .12s cubic-bezier(.4,0,.2,1); }
 .ms-icon-btn:hover { background: var(--hover) !important; color: var(--tx-2) !important; }
 .ms-icon-btn:active { transform: scale(.92); }
@@ -424,4 +440,165 @@ textarea::placeholder, input::placeholder { color: var(--tx-dim); }
   transform: scale(1.015);
   box-shadow: 0 6px 18px rgba(0,0,0,0.35);
   z-index: 10;
+}
+
+/* ─── Transitions de navigation du calendrier (jour ⇄ jour) ─────── */
+/* La direction est portée par la classe : suivant glisse depuis la droite,
+   précédent depuis la gauche, changement de vue = fondu doux. */
+.ms-cal-slide { will-change: transform, opacity; }
+.ms-cal-next  { animation: msCalNext .36s cubic-bezier(.22,1,.36,1) both; }
+.ms-cal-prev  { animation: msCalPrev .36s cubic-bezier(.22,1,.36,1) both; }
+.ms-cal-fade  { animation: msCalFade .30s cubic-bezier(.4,0,.2,1) both; }
+@keyframes msCalNext { from { opacity: 0; transform: translateX(34px); } to { opacity: 1; transform: none; } }
+@keyframes msCalPrev { from { opacity: 0; transform: translateX(-34px); } to { opacity: 1; transform: none; } }
+@keyframes msCalFade { from { opacity: 0; transform: translateY(8px) scale(.994); } to { opacity: 1; transform: none; } }
+
+/* le libellé du mois/semaine/jour suit le même mouvement, plus discret */
+.ms-cal-label-next { animation: msCalLabelNext .34s cubic-bezier(.22,1,.36,1) both; }
+.ms-cal-label-prev { animation: msCalLabelPrev .34s cubic-bezier(.22,1,.36,1) both; }
+@keyframes msCalLabelNext { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
+@keyframes msCalLabelPrev { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+
+/* ─── Historique : posts déjà publiés (passés) ──────────────────── */
+/* Grisés par défaut pour signaler "déjà publié", mais cliquables :
+   au survol ils reprennent vie pour inviter à consulter le détail. */
+.ms-sched-past {
+  filter: grayscale(.82) brightness(.72);
+  opacity: .66;
+  transition: filter .22s ease, opacity .22s ease, transform .18s cubic-bezier(.34,1.32,.5,1), box-shadow .18s ease;
+}
+.ms-sched-past:hover {
+  filter: grayscale(.25) brightness(.95);
+  opacity: .98;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ms-cal-next, .ms-cal-prev, .ms-cal-fade,
+  .ms-cal-label-next, .ms-cal-label-prev { animation: none !important; }
+  .ms-sched-past { transition: none; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Délice maîtrisé — couche motion/interaction ajoutée par impeccable.
+   Reste au service de la tâche : focus accessible, signaux d'état
+   vivants, entrées soignées. Jamais de théâtre décoratif.
+   ───────────────────────────────────────────────────────────── */
+
+/* Focus clavier visible et cohérent sur tout élément interactif.
+   :where() → spécificité 0 : n'écrase que l'outline, pas les styles. */
+:where(button, a, input, textarea, select, summary, [role="switch"], [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 2px;
+  border-radius: 7px;
+  transition: outline-color .12s ease;
+}
+:where(input, textarea):focus-visible { outline-offset: 1px; }
+
+/* Pastille « live » : onde qui pulse derrière le point d'une campagne
+   ACTIVE. Purement informatif (signale le direct), pas décoratif. */
+.ms-live { position: relative; }
+.ms-live::after {
+  content: ""; position: absolute; inset: 0; border-radius: 999px;
+  background: currentColor; opacity: .55; z-index: -1;
+  animation: msLivePulse 1.9s cubic-bezier(.4,0,.2,1) infinite;
+}
+@keyframes msLivePulse {
+  0%   { transform: scale(.7); opacity: .55; }
+  70%  { transform: scale(2.6); opacity: 0; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+/* Sheen d'entrée d'une KPICard : un trait de lumière balaye la carte
+   une seule fois à l'apparition. Donne du relief sans bouger la donnée. */
+.ms-kpi-sheen { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; pointer-events: none; z-index: 1; }
+.ms-kpi-sheen::before {
+  content: ""; position: absolute; top: 0; left: -65%; width: 55%; height: 100%;
+  background: linear-gradient(100deg, transparent, color-mix(in srgb, var(--accent) 16%, transparent), transparent);
+  transform: skewX(-16deg);
+  animation: msSheen 1.05s cubic-bezier(.22,1,.36,1) forwards;
+  animation-delay: var(--sheen-delay, .15s);
+}
+@keyframes msSheen { from { left: -65%; } to { left: 165%; } }
+
+/* Icône d'état vide : flottement lent, donne vie à un écran « rien ici ». */
+.ms-empty-icon { animation: msFloat 4.5s ease-in-out infinite; }
+@keyframes msFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+
+/* Bouton primaire : léger reflet qui glisse au survol (feedback, pas déco). */
+.ms-btn-primary { position: relative; overflow: hidden; }
+.ms-btn-primary::after {
+  content: ""; position: absolute; top: 0; left: -120%; width: 60%; height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,.18), transparent);
+  transform: skewX(-18deg); transition: left .55s cubic-bezier(.22,1,.36,1); pointer-events: none;
+}
+.ms-btn-primary:hover::after { left: 160%; }
+
+/* ChangeBadge : la flèche de tendance fait un petit bond au survol. */
+.ms-chip-hover svg { transition: transform .18s cubic-bezier(.34,1.56,.64,1); }
+.ms-chip-hover:hover svg { transform: translateY(-1px); }
+
+/* Helpers responsive de l'Overview (les styles inline ne portent pas de
+   media-queries — on passe par des classes). */
+.ov-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.ov-row  { display: grid; gap: 20px; }
+.ov-row-a { grid-template-columns: 1.5fr 1fr; }
+.ov-row-b { grid-template-columns: 1.2fr 1fr; }
+@media (max-width: 1180px) { .ov-kpis { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 980px)  { .ov-row-a, .ov-row-b { grid-template-columns: 1fr; } }
+@media (max-width: 520px)  { .ov-kpis { grid-template-columns: 1fr; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ms-live::after { animation: none; opacity: 0; }
+  .ms-kpi-sheen::before { animation: none; }
+  .ms-empty-icon { animation: none; }
+  .ms-btn-primary::after { display: none; }
+  .ms-chip-hover svg { transition: none; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Planning éditorial (SchedulePage) — responsive + affordances.
+   Les styles inline des vues ne portent pas de media-queries : on
+   déporte la grille ici pour que Semaine/Jour/Mois s'adaptent.
+   ───────────────────────────────────────────────────────────── */
+
+/* Vue Semaine : 7 colonnes en grand écran, défilement horizontal en
+   dessous (7 colonnes écrasées sur mobile = illisible). */
+.sched-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+@media (max-width: 1024px) {
+  .sched-week {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(154px, 1fr);
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    padding-bottom: 8px;
+    scrollbar-width: thin;
+  }
+  .sched-week > * { scroll-snap-align: start; }
+}
+
+/* Vue Jour : timeline + pipeline côte à côte, puis empilés. */
+.sched-day-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px; }
+@media (max-width: 880px) { .sched-day-grid { grid-template-columns: 1fr; } }
+
+/* Vue Mois : cellules plus basses sur petit écran (sinon trop de vide). */
+.sched-month-cell { min-height: 116px; }
+@media (max-width: 680px) { .sched-month-cell { min-height: 82px; padding: 5px !important; } }
+
+/* Indice « + » au survol d'une cellule de mois vide : invite au clic
+   sans encombrer l'affichage au repos. */
+.sched-add-hint {
+  opacity: 0; transform: scale(.82);
+  transition: opacity .16s ease, transform .2s cubic-bezier(.34,1.32,.5,1);
+}
+.ms-month-cell:hover .sched-add-hint { opacity: .55; transform: scale(1); }
+
+/* Modale de composition : entrée propre (spring) distincte du fond flou. */
+.sched-dialog { animation: schedDialog .34s cubic-bezier(.22,1,.36,1) both; }
+@keyframes schedDialog { from { opacity: 0; transform: translateY(16px) scale(.97); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .sched-add-hint { transition: none; }
+  .sched-dialog { animation: none; }
+  .sched-week { scroll-snap-type: none; }
 }

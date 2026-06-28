@@ -1,8 +1,9 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, Loader2, Plus, RefreshCw, Star, Trash2 } from "lucide-react";
+import { Check, Loader2, LogOut, Plus, RefreshCw, Star, Trash2 } from "lucide-react";
 import { api, ApiError, type MetaAccount } from "../lib/api";
 import { AuthUser, displayName, setCachedUser } from "../lib/auth";
 import { Avatar, MSButton, StatusBadge } from "../components/ms/primitives";
+import { TokenAlertBanner } from "../components/TokenAlertBanner";
 import { useToast } from "../providers/ToastProvider";
 import { useAccount } from "../providers/AccountProvider";
 import { useTheme, type ThemeMode } from "../providers/ThemeProvider";
@@ -40,10 +41,6 @@ function ProfileTab({ user, onUserChange }: { user: AuthUser; onUserChange: (u: 
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 28 }}>
         <Avatar name={displayName(user)} size={64} />
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <MSButton variant="outline" size="sm">Upload photo</MSButton>
-          <span style={{ fontSize: 11.5, color: "var(--tx-dim)" }}>JPG, PNG or GIF. Max 2MB.</span>
-        </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, maxWidth: 460 }}>
         <Field label="First name"><TextInput value={form.first_name} onChange={(e) => setForm((f) => ({ ...f, first_name: e.target.value }))} /></Field>
@@ -93,7 +90,7 @@ function AccountForm({ initial, onCancel, onSubmit, saving }: {
       </Field>
       <Field label="Ad Account ID" hint="Pas besoin de taper « act_ » — juste les chiffres (on l'ajoute pour toi).">
         <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
-          <span style={{ height: 40, display: "inline-flex", alignItems: "center", padding: "0 10px", background: "#0B0D11", border: "1px solid var(--bd)", borderRight: "none", borderRadius: "8px 0 0 8px", color: "var(--tx-dim)", fontFamily: "JetBrains Mono", fontSize: 13 }}>act_</span>
+          <span style={{ height: 40, display: "inline-flex", alignItems: "center", padding: "0 10px", background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRight: "none", borderRadius: "8px 0 0 8px", color: "var(--tx-dim)", fontFamily: "JetBrains Mono", fontSize: 13 }}>act_</span>
           <TextInput value={acct} onChange={(e) => setAcct(e.target.value.replace(/^act_/, ""))} placeholder="1234567890" style={{ fontFamily: "JetBrains Mono", borderRadius: "0 8px 8px 0" }} />
         </div>
       </Field>
@@ -122,15 +119,18 @@ function AccountCard({ account, onTest, onEdit, onDelete, onSetDefault, testing 
   testing: boolean;
 }) {
   const a = account;
+  const expired = a.token_status === "expired";
   return (
-    <div style={{ border: "1px solid " + (a.is_default ? "color-mix(in srgb, var(--accent) 25%, transparent)" : "var(--bd)"), background: a.is_default ? "color-mix(in srgb, var(--accent) 3%, transparent)" : "var(--surf-2)", borderRadius: 12, padding: 18, marginBottom: 10 }}>
+    <div className="ms-acct-card" style={{ border: "1px solid " + (expired ? "color-mix(in srgb, #F43F5E 35%, transparent)" : a.is_default ? "color-mix(in srgb, var(--accent) 25%, transparent)" : "var(--bd)"), background: a.is_default ? "color-mix(in srgb, var(--accent) 3%, transparent)" : "var(--surf-2)", borderRadius: 12, padding: 18, marginBottom: 10 }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
         <div style={{ display: "flex", gap: 12, minWidth: 0 }}>
           <span style={{ color: a.meta_access_token_set ? "var(--accent)" : "var(--tx-dim)", display: "inline-flex", marginTop: 2 }}><Star size={18} /></span>
           <div style={{ minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flexWrap: "wrap" }}>
               <span style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: "var(--tx)" }}>{a.label}</span>
-              <StatusBadge status={a.meta_access_token_set ? "Valid" : "No token"} dot />
+              {expired
+                ? <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: "#F43F5E", background: "color-mix(in srgb, #F43F5E 12%, transparent)", border: "1px solid color-mix(in srgb, #F43F5E 35%, transparent)", borderRadius: 999, padding: "2px 9px" }}>Token expiré</span>
+                : <StatusBadge status={a.meta_access_token_set ? "Valid" : "No token"} dot />}
               {a.is_default && <span style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--accent)", fontWeight: 600 }}>Default</span>}
             </div>
             <div style={{ fontFamily: "JetBrains Mono", fontSize: 12.5, color: "var(--tx-3)", marginTop: 8 }}>{a.meta_ad_account_id || "—"}</div>
@@ -196,6 +196,7 @@ function AccountsTab() {
 
   return (
     <div>
+      <TokenAlertBanner />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
         <div>
           <h3 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 16, color: "var(--tx)", margin: 0 }}>Meta API Keys</h3>
@@ -252,7 +253,7 @@ function AppearanceTab() {
       <Field label="Theme" hint="Dark (défaut), Light (clair), Dim (fonds relevés), ou System (suit ton OS).">
         <div style={{ display: "flex", gap: 10 }}>
           {themes.map((t) => (
-            <button key={t.val} onClick={() => setTheme(t.val)} style={{ flex: 1, maxWidth: 130, padding: "14px 12px", borderRadius: 10, border: "1px solid " + (theme === t.val ? "var(--accent)" : "var(--bd)"), background: theme === t.val ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "var(--surf-card)", color: theme === t.val ? "var(--tx)" : "var(--tx-3)", cursor: "pointer", fontSize: 13, fontFamily: "IBM Plex Sans" }}>
+            <button key={t.val} onClick={() => setTheme(t.val)} className="ms-theme-tile" style={{ flex: 1, maxWidth: 130, padding: "14px 12px", borderRadius: 10, border: "1px solid " + (theme === t.val ? "var(--accent)" : "var(--bd)"), background: theme === t.val ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "var(--surf-card)", color: theme === t.val ? "var(--tx)" : "var(--tx-3)", cursor: "pointer", fontSize: 13, fontFamily: "IBM Plex Sans" }}>
               <div style={{ height: 30, borderRadius: 6, marginBottom: 8, background: t.preview, border: "1px solid var(--bd)" }} />{t.label}
             </button>
           ))}
@@ -261,7 +262,7 @@ function AppearanceTab() {
       <Field label="Accent color" hint="Appliqué instantanément à toute l'interface.">
         <div style={{ display: "flex", gap: 10 }}>
           {accents.map((c) => (
-            <button key={c} onClick={() => setAccent(c)} title={c} style={{ width: 34, height: 34, borderRadius: 999, background: c, border: isAccent(c) ? "2px solid var(--tx)" : "2px solid transparent", outline: isAccent(c) ? "2px solid " + c : "none", outlineOffset: 2, cursor: "pointer" }} />
+            <button key={c} onClick={() => setAccent(c)} title={c} className="ms-swatch" style={{ width: 34, height: 34, borderRadius: 999, background: c, border: isAccent(c) ? "2px solid var(--tx)" : "2px solid transparent", outline: isAccent(c) ? "2px solid " + c : "none", outlineOffset: 2, cursor: "pointer" }} />
           ))}
         </div>
       </Field>
@@ -269,20 +270,39 @@ function AppearanceTab() {
   );
 }
 
-export function SettingsPage({ user, onUserChange }: { user: AuthUser; onUserChange: (u: AuthUser) => void }) {
+export function SettingsPage({ user, onUserChange, onLogout }: { user: AuthUser; onUserChange: (u: AuthUser) => void; onLogout: () => void }) {
   const [tab, setTab] = useState("Meta API Keys");
+  const [confirmLogout, setConfirmLogout] = useState(false);
   return (
     <div style={{ display: "flex", gap: 32, alignItems: "flex-start" }}>
       <div style={{ width: 200, flexShrink: 0, display: "flex", flexDirection: "column", gap: 2, position: "sticky", top: 0 }}>
         {SETTINGS_TABS.map((t) => (
-          <button key={t} onClick={() => setTab(t)} className="ms-nav" style={{ textAlign: "left", padding: "9px 12px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13.5, fontWeight: tab === t ? 600 : 500, fontFamily: "IBM Plex Sans", background: tab === t ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent", color: tab === t ? "#fff" : "var(--tx-3)" }}>{t}</button>
+          <button key={t} onClick={() => setTab(t)} className="ms-nav" style={{ textAlign: "left", padding: "9px 12px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13.5, fontWeight: tab === t ? 600 : 500, fontFamily: "IBM Plex Sans", background: tab === t ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent", color: tab === t ? "var(--accent)" : "var(--tx-3)" }}>{t}</button>
         ))}
+        <div style={{ height: 1, background: "var(--bd)", margin: "10px 0" }} />
+        <button onClick={() => setConfirmLogout(true)} className="ms-nav ms-nav-danger" style={{ display: "flex", alignItems: "center", gap: 9, textAlign: "left", padding: "9px 12px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13.5, fontWeight: 500, fontFamily: "IBM Plex Sans", background: "transparent", color: "#EF4444" }}>
+          <LogOut size={15} /> Se déconnecter
+        </button>
       </div>
       <div style={{ flex: 1, maxWidth: 720, minWidth: 0 }}>
         {tab === "Profile" && <ProfileTab user={user} onUserChange={onUserChange} />}
         {tab === "Meta API Keys" && <AccountsTab />}
         {tab === "Appearance" && <AppearanceTab />}
       </div>
+
+      {confirmLogout && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 150, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.6)" }} onClick={() => setConfirmLogout(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 380, background: "var(--surf-pop)", border: "1px solid var(--bd)", borderRadius: 14, padding: 24, boxShadow: "0 24px 70px rgba(0,0,0,.6)" }}>
+            <div style={{ width: 44, height: 44, borderRadius: 12, background: "#EF444415", border: "1px solid #EF444430", color: "#EF4444", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}><LogOut size={20} /></div>
+            <div style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 17, color: "var(--tx)", marginBottom: 6 }}>Se déconnecter ?</div>
+            <div style={{ fontSize: 13.5, color: "var(--tx-3)", lineHeight: 1.5, marginBottom: 20 }}>Tu reviendras à l'écran de connexion. Tes données restent enregistrées.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <MSButton variant="outline" onClick={() => setConfirmLogout(false)}>Annuler</MSButton>
+              <MSButton variant="primary" danger onClick={onLogout} style={{ background: "#EF4444", borderColor: "#EF4444", color: "#fff" }} icon={<LogOut size={15} />}>Se déconnecter</MSButton>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
