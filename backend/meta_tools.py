@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any, Optional
@@ -99,9 +100,14 @@ def build_meta_tools(
     ad_account_id: str,
     page_id: str,
     meta_pixel_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> tuple[list, dict[str, Any]]:
     _init_api(access_token)
-    _persist: dict[str, Any] = {}
+    # request_id unique par construction d'agent (= par appel /chat) : sert
+    # d'identifiant d'idempotence pour la persistance en base (review §5.2).
+    _persist: dict[str, Any] = {"request_id": uuid.uuid4().hex}
+    # Garde-fou anti-rafale : nombre max de campagnes créées par utilisateur/heure.
+    _MAX_CAMPAIGNS_PER_HOUR = 10
 
     @tool
     def create_full_campaign(
@@ -110,13 +116,17 @@ def build_meta_tools(
         daily_budget: int,
         ad_message: str,
         link: str,
-        image_hash: str,
+        image_hash: str = "",
+        video_id: str = "",
         countries: list[str] = ["MA"],
         age_min: int = 18,
         age_max: int = 65,
         optimization_goal: str = "LINK_CLICKS",
+        cta: str = "LEARN_MORE",
     ) -> str:
         """Crée une campagne Meta Ads complète (campagne + ad set + creative + ad), tout en PAUSED.
+
+        Le visuel peut être une PHOTO (image_hash) OU une VIDÉO (video_id) — fournis l'un des deux.
 
         Args:
             campaign_name: nom de la campagne
@@ -124,7 +134,8 @@ def build_meta_tools(
             daily_budget: budget quotidien EN CENTIMES (1000 = 10.00 dans la devise du compte)
             ad_message: texte de l'annonce
             link: URL de destination
-            image_hash: hash hex d'une image déjà uploadée (utiliser upload_image ou upload_image_from_url d'abord)
+            image_hash: hash hex d'une photo déjà uploadée (utiliser upload_image / upload_image_from_url). Sert de miniature si video_id est fourni.
+            video_id: identifiant d'une vidéo déjà uploadée (annonce vidéo). Prioritaire sur image_hash pour le format.
             countries: liste de codes pays ISO-2 (ex: ["MA", "FR"])
             age_min: âge minimum ciblé
             age_max: âge maximum ciblé
@@ -145,13 +156,33 @@ def build_meta_tools(
                 "Ne la recrée pas — relaie ce résultat à l'utilisateur."
             )
 
+        # ── Garde-fou anti-rafale (review §5.7) ─────────────────────────
+        # Si l'utilisateur (ou une boucle de l'agent) a déjà créé beaucoup de
+        # campagnes dans la dernière heure, on refuse proprement et on demande
+        # une confirmation au lieu d'en empiler des dizaines par accident.
+        if user_id:
+            from .db import count_recent_campaigns
+
+            since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            if count_recent_campaigns(user_id, since) >= _MAX_CAMPAIGNS_PER_HOUR:
+                return (
+                    f"⚠️ Limite atteinte : {_MAX_CAMPAIGNS_PER_HOUR} campagnes déjà "
+                    "créées dans la dernière heure. Par sécurité, ne crée rien de plus "
+                    "sans une confirmation explicite de l'utilisateur (demande-lui s'il "
+                    "veut vraiment continuer)."
+                )
+
         # ── Validations préalables ──────────────────────────────────────
-        if not image_hash or not _HEX_RE.match(image_hash.strip()):
+        # Un visuel est requis : soit une photo (image_hash hex), soit une vidéo
+        # (video_id numérique). image_hash sert alors de miniature optionnelle.
+        image_hash = (image_hash or "").strip()
+        video_id = (video_id or "").strip()
+        has_image = bool(image_hash and _HEX_RE.match(image_hash))
+        if not video_id and not has_image:
             return (
-                "❌ image_hash manquant ou invalide. Demande à l'utilisateur "
-                "un chemin d'image local (puis upload_image) ou une URL "
-                "publique (puis upload_image_from_url), puis réessaie avec "
-                "le hash retourné."
+                "❌ Visuel manquant : il faut une photo (image_hash) ou une vidéo "
+                "(video_id). Demande à l'utilisateur un chemin/URL d'image (puis "
+                "upload_image / upload_image_from_url) ou une vidéo, puis réessaie."
             )
         allowed = COMPATIBLE_GOALS.get(objective)
         if allowed and optimization_goal not in allowed:
@@ -197,6 +228,19 @@ def build_meta_tools(
             # Lecture best-effort : on ne bloque pas la création si la liste échoue.
             pass
 
+        # Mémorise l'échec pour que /chat le persiste dans la table campaigns
+        # (status_detail=failed + error_log complet) — review §5.2.
+        def _record_failure(stage: str, message: str) -> str:
+            _persist["last_error"] = {
+                "stage": stage,
+                "error_message": message,
+                "request_id": _persist.get("request_id"),
+                "name": campaign_name,
+                "objective": objective,
+                "daily_budget": daily_budget,
+            }
+            return message
+
         try:
             campaign = account.create_campaign(
                 params={
@@ -211,7 +255,7 @@ def build_meta_tools(
                 }
             )
         except FacebookRequestError as e:
-            return _fmt_fb_error(e, "la création de la campagne")
+            return _record_failure("campaign", _fmt_fb_error(e, "la création de la campagne"))
 
         try:
             adset = account.create_ad_set(
@@ -232,25 +276,51 @@ def build_meta_tools(
             )
         except FacebookRequestError as e:
             _rollback_campaign(campaign["id"])
-            return _fmt_fb_error(e, "la création de l'ad set")
+            return _record_failure("adset", _fmt_fb_error(e, "la création de l'ad set"))
+
+        # Annonce VIDÉO : object_story_spec.video_data. Meta exige une miniature
+        # (image_hash fourni, ou récupérée auto sur la vidéo une fois traitée).
+        if video_id:
+            thumb_hash = image_hash if has_image else None
+            thumb_url = None
+            if not thumb_hash:
+                thumb_url, vid_err = _wait_video_thumbnail(video_id, access_token)
+                if not thumb_url:
+                    _rollback_campaign(campaign["id"])
+                    return _record_failure(
+                        "video_thumbnail",
+                        "❌ La vidéo est encore en cours de traitement par Meta "
+                        f"({vid_err or 'miniature indisponible'}). Réessaie dans "
+                        "une minute, ou fournis une photo comme miniature.",
+                    )
+            video_data: dict[str, Any] = {"video_id": video_id, "message": ad_message}
+            if thumb_hash:
+                video_data["image_hash"] = thumb_hash
+            elif thumb_url:
+                video_data["image_url"] = thumb_url
+            if link:
+                video_data["call_to_action"] = {"type": cta, "value": {"link": link}}
+            story_spec = {"page_id": page_id, "video_data": video_data}
+        else:
+            story_spec = {
+                "page_id": page_id,
+                "link_data": {
+                    "message": ad_message,
+                    "link": link,
+                    "image_hash": image_hash,
+                },
+            }
 
         try:
             creative = account.create_ad_creative(
                 params={
                     "name": f"{campaign_name} - Creative",
-                    "object_story_spec": {
-                        "page_id": page_id,
-                        "link_data": {
-                            "message": ad_message,
-                            "link": link,
-                            "image_hash": image_hash,
-                        },
-                    },
+                    "object_story_spec": story_spec,
                 }
             )
         except FacebookRequestError as e:
             _rollback_campaign(campaign["id"])
-            return _fmt_fb_error(e, "la création du creative")
+            return _record_failure("creative", _fmt_fb_error(e, "la création du creative"))
 
         try:
             ad = account.create_ad(
@@ -263,7 +333,7 @@ def build_meta_tools(
             )
         except FacebookRequestError as e:
             _rollback_campaign(campaign["id"])
-            return _fmt_fb_error(e, "la création de l'ad")
+            return _record_failure("ad", _fmt_fb_error(e, "la création de l'ad"))
 
         _persist["last_created"] = {
             "campaign_id": campaign["id"],
@@ -279,6 +349,7 @@ def build_meta_tools(
                 "age_max": age_max,
             },
             "optimization_goal": optimization_goal,
+            "request_id": _persist.get("request_id"),
         }
 
         return (
@@ -462,6 +533,24 @@ def test_connection(access_token: str, ad_account_id: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def set_campaign_status(access_token: str, campaign_id: str, status: str) -> tuple[bool, str]:
+    """Active (ACTIVE) ou met en pause (PAUSED) une campagne via la Marketing API.
+
+    Retourne (ok, message). Le message contient l'erreur Meta complète en cas d'échec.
+    """
+    status = (status or "").strip().upper()
+    if status not in ("ACTIVE", "PAUSED"):
+        return False, "Statut invalide (attendu ACTIVE ou PAUSED)."
+    try:
+        _init_api(access_token)
+        Campaign(campaign_id).api_update(params={"status": status})
+        return True, status
+    except FacebookRequestError as exc:
+        return False, _fmt_fb_error(exc, "la mise à jour du statut de la campagne")
+    except Exception as exc:
+        return False, f"❌ Erreur : {exc}"
+
+
 # ─── Read-only helpers used by HTTP endpoints (not langchain tools) ──────────
 
 
@@ -494,6 +583,20 @@ def _count_conversions(actions: Any) -> int:
     return total
 
 
+def _extract_revenue(action_values: Any) -> float:
+    """`action_values` (valeur monétaire des conversions) revient comme une liste
+    de {action_type, value}. On somme les achats trackés par le pixel pour obtenir
+    le revenu attribué — la base du ROI (« j'ai dépensé X, gagné Y »)."""
+    if not isinstance(action_values, list):
+        return 0.0
+    total = 0.0
+    wanted = {"purchase", "offsite_conversion.fb_pixel_purchase", "omni_purchase"}
+    for a in action_values:
+        if isinstance(a, dict) and a.get("action_type") in wanted:
+            total += _safe_float(a.get("value"))
+    return round(total, 2)
+
+
 def list_campaigns_with_insights(
     access_token: str,
     ad_account_id: str,
@@ -517,12 +620,15 @@ def list_campaigns_with_insights(
         insights = []
         try:
             insights = c.get_insights(
-                fields=["impressions", "clicks", "spend", "ctr", "cpc", "actions", "purchase_roas"],
+                fields=["impressions", "clicks", "spend", "ctr", "cpc", "actions", "purchase_roas", "action_values"],
                 params=dp,
             )
         except FacebookRequestError:
             insights = []
-        agg = {"impressions": 0, "clicks": 0, "spend": 0.0, "ctr": 0.0, "cpc": 0.0, "conversions": 0, "roas": 0.0}
+        agg = {
+            "impressions": 0, "clicks": 0, "spend": 0.0, "ctr": 0.0, "cpc": 0.0,
+            "conversions": 0, "roas": 0.0, "revenue": 0.0, "roi": 0.0,
+        }
         if insights:
             row = insights[0]
             agg["impressions"] = _safe_int(row.get("impressions"))
@@ -531,7 +637,15 @@ def list_campaigns_with_insights(
             agg["ctr"] = _safe_float(row.get("ctr"))
             agg["cpc"] = _safe_float(row.get("cpc"))
             agg["conversions"] = _count_conversions(row.get("actions"))
+            agg["revenue"] = _extract_revenue(row.get("action_values"))
             agg["roas"] = _extract_roas(row.get("purchase_roas"))
+            # Si Meta ne renvoie pas purchase_roas mais qu'on a revenu + dépense,
+            # on le calcule nous-mêmes (ROAS = revenu / dépense).
+            if not agg["roas"] and agg["spend"] and agg["revenue"]:
+                agg["roas"] = round(agg["revenue"] / agg["spend"], 2)
+            # ROI % = (revenu − dépense) / dépense × 100.
+            if agg["spend"]:
+                agg["roi"] = round((agg["revenue"] - agg["spend"]) / agg["spend"] * 100, 1)
         daily_budget_cents = _safe_float(c.get("daily_budget"))
         out.append(
             {
@@ -617,26 +731,12 @@ def _format_label(object_type: Any) -> str:
     return _FORMAT_LABELS.get(str(object_type).upper(), str(object_type).title())
 
 
-def get_campaign_detail(
-    access_token: str,
-    campaign_id: str,
-    date_preset: str = "last_30d",
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-) -> dict[str, Any]:
-    """Real ad sets, ads, demographics and placements for one campaign.
+def _detail_adsets(campaign: Campaign, dp: dict) -> list[dict[str, Any]]:
+    """Ad sets : budget/audience depuis l'objet, métriques depuis les insights.
 
-    Each section is independently guarded so a single failing breakdown never
-    blanks the whole panel (returns an empty list instead).
-    """
-    _init_api(access_token)
-    campaign = Campaign(campaign_id)
-    dp = _date_params(date_preset, since, until)
-
-    # ── Ad sets : budget/audience from the object, metrics from insights ──
-    # NOTE: unlike the breakdown sections below, a Meta error here is NOT
-    # swallowed — it propagates so the route returns a real error message
-    # instead of a misleading "no ad sets" empty state.
+    NOTE : contrairement aux sections breakdown, une erreur Meta ici N'EST PAS
+    avalée — elle remonte pour que la route renvoie un vrai message d'erreur au
+    lieu d'un état « aucun ad set » trompeur."""
     adsets: list[dict[str, Any]] = []
     meta_by_id: dict[str, dict] = {}
     for a in campaign.get_ad_sets(
@@ -673,10 +773,13 @@ def get_campaign_detail(
                 "roas": _extract_roas(r.get("purchase_roas")),
             }
         )
+    return adsets
 
-    # ── Ads : creative preview/format from the object, metrics from insights ─
+
+def _detail_ads(campaign: Campaign, dp: dict) -> list[dict[str, Any]]:
+    """Ads : aperçu créatif/format depuis l'objet, métriques depuis les insights."""
     ads: list[dict[str, Any]] = []
-    meta_by_id = {}
+    meta_by_id: dict[str, dict] = {}
     for a in campaign.get_ads(fields=["name", "status", "creative{thumbnail_url,object_type}"]):
         creative = a.get("creative") or {}
         meta_by_id[a.get("id")] = {
@@ -685,7 +788,7 @@ def get_campaign_detail(
             "thumbnail_url": creative.get("thumbnail_url") if isinstance(creative, dict) else None,
             "format": (creative.get("object_type") if isinstance(creative, dict) else None) or "—",
         }
-    ins_by_id = {}
+    ins_by_id: dict[str, dict] = {}
     for r in campaign.get_insights(
         fields=["ad_id", "ad_name", "ctr", "cpc", "spend", "impressions", "clicks", "actions"],
         params={"level": "ad", **dp},
@@ -708,8 +811,11 @@ def get_campaign_detail(
                 "conversions": _count_conversions(r.get("actions")),
             }
         )
+    return ads
 
-    # ── Demographics : impressions by age × gender ──────────────────────
+
+def _detail_demographics(campaign: Campaign, dp: dict) -> list[dict[str, Any]]:
+    """Démographie : impressions par âge × genre (best-effort, jamais bloquant)."""
     demographics: list[dict[str, Any]] = []
     try:
         agg: dict[str, dict[str, int]] = {}
@@ -728,8 +834,11 @@ def get_campaign_detail(
             demographics.append({"age": age, "male": agg[age]["male"], "female": agg[age]["female"]})
     except FacebookRequestError:
         demographics = []
+    return demographics
 
-    # ── Placements : share of impressions by publisher platform ─────────
+
+def _detail_placements(campaign: Campaign, dp: dict) -> list[dict[str, Any]]:
+    """Placements : part des impressions par plateforme (best-effort)."""
     placements: list[dict[str, Any]] = []
     try:
         rows = list(
@@ -745,8 +854,43 @@ def get_campaign_detail(
             placements.append({"name": name, "value": round(imp * 100 / total, 1)})
     except FacebookRequestError:
         placements = []
+    return placements
 
-    return {"adsets": adsets, "ads": ads, "demographics": demographics, "placements": placements}
+
+# Sections valides pour le chargement à la demande (un onglet du panneau = une section).
+_DETAIL_SECTIONS = ("adsets", "ads", "demographics", "placements")
+
+
+def get_campaign_detail(
+    access_token: str,
+    campaign_id: str,
+    date_preset: str = "last_30d",
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    section: Optional[str] = None,
+) -> dict[str, Any]:
+    """Ad sets, ads, démographie et placements réels d'une campagne.
+
+    `section` = "adsets" | "ads" | "demographics" | "placements" : si fournie,
+    SEULE cette section déclenche des appels Meta (chargement à la demande par
+    onglet → ~2 appels au lieu de 6, ce qui ménage la limite d'appels par
+    utilisateur de Meta). `None` charge tout (compatibilité ascendante).
+    Les clés non demandées restent des listes vides — le frontend lit seulement
+    celle de l'onglet actif.
+    """
+    _init_api(access_token)
+    campaign = Campaign(campaign_id)
+    dp = _date_params(date_preset, since, until)
+    out: dict[str, Any] = {"adsets": [], "ads": [], "demographics": [], "placements": []}
+    if section in (None, "adsets"):
+        out["adsets"] = _detail_adsets(campaign, dp)
+    if section in (None, "ads"):
+        out["ads"] = _detail_ads(campaign, dp)
+    if section in (None, "demographics"):
+        out["demographics"] = _detail_demographics(campaign, dp)
+    if section in (None, "placements"):
+        out["placements"] = _detail_placements(campaign, dp)
+    return out
 
 
 def list_custom_audiences(
@@ -841,7 +985,7 @@ def _account_kpi_row(account: AdAccount, sel: dict[str, Any]) -> dict[str, Any]:
     """`sel` is the date selector: {"time_range": {...}} or {"date_preset": "..."}."""
     try:
         rows = account.get_insights(
-            fields=["impressions", "clicks", "spend", "ctr", "cpc", "cpm", "reach", "actions"],
+            fields=["impressions", "clicks", "spend", "ctr", "cpc", "cpm", "reach", "actions", "action_values"],
             params={**sel, "level": "account"},
         )
         if rows:
@@ -851,24 +995,45 @@ def _account_kpi_row(account: AdAccount, sel: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _custom_windows(since: str, until: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Current = [since, until]; previous = the equally-long window just before it
+    (pour le calcul du change %). Façon « plage de dates Meta Ads »."""
+    s = datetime.fromisoformat(since).date()
+    u = datetime.fromisoformat(until).date()
+    span = (u - s).days
+    prev_until = s - timedelta(days=1)
+    prev_since = prev_until - timedelta(days=span)
+    return (
+        {"since": s.isoformat(), "until": u.isoformat()},
+        {"since": prev_since.isoformat(), "until": prev_until.isoformat()},
+    )
+
+
 def get_account_dashboard(
     access_token: str,
     ad_account_id: str,
     days: int = 30,
     all_time: bool = False,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ) -> dict[str, Any]:
     """Return aggregated KPIs + time series + age/gender breakdowns for the account.
 
     Uses an exact `days`-long time window (and the matching previous window for
     real change %), never a coarse preset. When `all_time` is True, uses Meta's
     `maximum` preset to cover the account's whole history (no change %, since
-    there is no comparable previous window).
+    there is no comparable previous window). A custom `since`/`until` window
+    (plage de dates façon Meta Ads) is also supported.
     """
     _init_api(access_token)
     account = AdAccount(ad_account_id)
 
+    _prev_range: dict[str, str] = {}
     if all_time:
         sel: dict[str, Any] = {"date_preset": "maximum"}
+    elif since and until:
+        cur_range, _prev_range = _custom_windows(since, until)
+        sel = {"time_range": cur_range}
     else:
         cur_range, _prev_range = _exact_windows(days)
         sel = {"time_range": cur_range}
@@ -885,6 +1050,13 @@ def get_account_dashboard(
         prev = _safe_int(prev_row.get(field)) if integer else _safe_float(prev_row.get(field))
         return _pct_change(cur, prev)
 
+    # Revenu / ROAS / profit au niveau compte (pour les KPIs ROI de l'Overview).
+    revenue = _extract_revenue(kpi_row.get("action_values"))
+    spend_total = _safe_float(kpi_row.get("spend"))
+    roas = round(revenue / spend_total, 2) if spend_total else 0.0
+    profit = round(revenue - spend_total, 2)
+    prev_revenue = _extract_revenue(prev_row.get("action_values"))
+
     changes = {
         "impressions": _chg("impressions", integer=True),
         "clicks": _chg("clicks", integer=True),
@@ -893,6 +1065,7 @@ def get_account_dashboard(
         "ctr": _chg("ctr"),
         "cpc": _chg("cpc"),
         "cpm": _chg("cpm"),
+        "revenue": None if all_time else _pct_change(revenue, prev_revenue),
     }
 
     # Daily series for charts.
@@ -975,6 +1148,9 @@ def get_account_dashboard(
         "age_breakdown": age_breakdown,
         "gender_breakdown": gender_breakdown,
         "geo_breakdown": geo_breakdown,
+        "revenue": revenue,
+        "roas": roas,
+        "profit": profit,
     }
 
 
@@ -1123,3 +1299,66 @@ def upload_image_bytes(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+def upload_video_bytes(
+    access_token: str,
+    ad_account_id: str,
+    data: bytes,
+    filename: str = "video.mp4",
+) -> tuple[Optional[str], Optional[str]]:
+    """Upload des octets vidéo vers le compte publicitaire (/advideos).
+    Retourne (video_id, error). La vidéo est ensuite traitée de façon async par Meta."""
+    try:
+        url = f"{meta_pages.GRAPH}/{ad_account_id}/advideos"
+        resp = requests.post(
+            url,
+            data={"access_token": access_token},
+            files={"source": (filename or "video.mp4", BytesIO(data))},
+            timeout=180,
+        )
+        body = resp.json()
+        if isinstance(body, dict) and body.get("error"):
+            return None, body["error"].get("message", "Erreur Meta lors de l'upload vidéo")
+        video_id = body.get("id") if isinstance(body, dict) else None
+        if not video_id:
+            return None, "Réponse Meta invalide (aucun video_id)."
+        return str(video_id), None
+    except Exception as e:
+        return None, f"Erreur lors de l'upload de la vidéo : {e}"
+
+
+def _wait_video_thumbnail(
+    video_id: str, access_token: str, max_wait: int = 30
+) -> tuple[Optional[str], Optional[str]]:
+    """Attend que la vidéo soit traitée puis renvoie l'URI de sa miniature
+    préférée. Retourne (thumbnail_url, error). Best-effort, borné par max_wait."""
+    import time
+
+    deadline = time.time() + max_wait
+    last_status: Optional[str] = None
+    try:
+        while time.time() < deadline:
+            r = requests.get(
+                f"{meta_pages.GRAPH}/{video_id}",
+                params={"fields": "status", "access_token": access_token},
+                timeout=15,
+            ).json()
+            last_status = ((r.get("status") or {}).get("video_status")) if isinstance(r, dict) else None
+            if last_status == "ready":
+                break
+            if last_status == "error":
+                return None, "traitement vidéo en erreur"
+            time.sleep(2)
+        t = requests.get(
+            f"{meta_pages.GRAPH}/{video_id}/thumbnails",
+            params={"access_token": access_token},
+            timeout=15,
+        ).json()
+        thumbs = t.get("data", []) if isinstance(t, dict) else []
+        if not thumbs:
+            return None, f"miniature non prête (statut: {last_status or 'inconnu'})"
+        preferred = next((x for x in thumbs if x.get("is_preferred")), thumbs[0])
+        return preferred.get("uri"), None
+    except Exception as e:
+        return None, f"{e}"

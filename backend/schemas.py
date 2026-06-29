@@ -34,8 +34,31 @@ class UserUpdateRequest(BaseModel):
 
 class AuthResponse(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: UserPublic
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+
+class NotificationOut(BaseModel):
+    id: str
+    type: str
+    title: str
+    body: Optional[str] = None
+    read: bool = False
+    created_at: str
+
+
+class NotificationsResponse(BaseModel):
+    items: list[NotificationOut]
+    unread_count: int
 
 
 class MetaSettingsRequest(BaseModel):
@@ -60,6 +83,33 @@ class MetaTestResponse(BaseModel):
     ok: bool
     account_name: Optional[str] = None
     error: Optional[str] = None
+
+
+# ─── Meta accounts (multi-clés) ──────────────────────────────────────────────
+
+
+class MetaAccountRequest(BaseModel):
+    label: Optional[str] = None
+    meta_access_token: Optional[str] = None
+    meta_ad_account_id: Optional[str] = None
+    meta_page_id: Optional[str] = None
+    meta_pixel_id: Optional[str] = None
+    preferred_currency: Optional[str] = None
+    timezone: Optional[str] = None
+    is_default: Optional[bool] = None
+
+
+class MetaAccountResponse(BaseModel):
+    id: str
+    label: str
+    meta_access_token_set: bool
+    meta_ad_account_id: Optional[str] = None
+    meta_page_id: Optional[str] = None
+    meta_pixel_id: Optional[str] = None
+    preferred_currency: Optional[str] = None
+    timezone: Optional[str] = None
+    is_default: bool = False
+    token_status: str = "valid"  # "valid" | "expired"
 
 
 # ─── Structured agent output ─────────────────────────────────────────────────
@@ -90,6 +140,8 @@ class CampaignBrief(BaseModel):
     link: Optional[str] = None
     image_prompt: Optional[str] = None
     image_hash: Optional[str] = None
+    # video_id : si l'annonce utilise une vidéo plutôt qu'une image.
+    video_id: Optional[str] = None
     estimated_reach: Optional[str] = None
     notes: Optional[str] = None
 
@@ -107,7 +159,54 @@ class InsightAnswer(BaseModel):
     recommendations: list[str] = Field(default_factory=list)
 
 
-StructuredOutput = Union[CampaignBrief, InsightAnswer]
+class QuestionOption(BaseModel):
+    value: str
+    label: str
+    hint: Optional[str] = None
+
+
+class Question(BaseModel):
+    id: str
+    label: str
+    # single = un seul choix ; multi = plusieurs ; text = champ libre ;
+    # media = upload d'une photo ou d'une vidéo.
+    type: Literal["single", "multi", "text", "media"] = "single"
+    options: list[QuestionOption] = Field(default_factory=list)
+    # allow_custom = afficher un champ « Autre / préciser » sous le QCM quand
+    # l'utilisateur ne trouve pas son choix dans la liste.
+    allow_custom: bool = True
+    placeholder: Optional[str] = None
+    required: bool = True
+
+
+class CampaignQuestionnaire(BaseModel):
+    kind: Literal["campaign_questionnaire"] = "campaign_questionnaire"
+    title: str = "Création de campagne"
+    intro: Optional[str] = None
+    questions: list[Question] = Field(default_factory=list)
+    submit_label: str = "Générer le brief"
+
+
+class CampaignCreated(BaseModel):
+    """Carte de confirmation affichée APRÈS création réelle d'une campagne.
+
+    Met en avant le statut PAUSED (garde-fou sécurité = argument de vente) :
+    aucune dépense tant que l'utilisateur n'active pas manuellement.
+    """
+
+    kind: Literal["campaign_created"] = "campaign_created"
+    campaign_id: str
+    adset_id: Optional[str] = None
+    ad_id: Optional[str] = None
+    name: str
+    objective: Optional[str] = None
+    daily_budget: Optional[float] = None  # en centimes (devise du compte)
+    status: str = "PAUSED"
+
+
+StructuredOutput = Union[
+    CampaignBrief, InsightAnswer, CampaignQuestionnaire, CampaignCreated
+]
 
 
 # ─── Chat ────────────────────────────────────────────────────────────────────
@@ -118,6 +217,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     attached_image_hash: Optional[str] = None
     attached_image_url: Optional[str] = None
+    account_id: Optional[str] = None
 
 
 class ToolCallInfo(BaseModel):
@@ -156,6 +256,7 @@ class CampaignSummary(BaseModel):
     name: str
     objective: Optional[str] = None
     status: Optional[str] = None
+    created_time: Optional[str] = None
     daily_budget: Optional[float] = None
     impressions: int = 0
     clicks: int = 0
@@ -163,6 +264,18 @@ class CampaignSummary(BaseModel):
     ctr: float = 0.0
     cpc: float = 0.0
     conversions: int = 0
+    roas: float = 0.0
+    revenue: float = 0.0
+    roi: float = 0.0
+    # Métrique de performance choisie selon l'objectif (ROAS, CPL, CPE, CPM, CPC,
+    # CPI, Cost per message). Champs optionnels → non-breaking pour le frontend.
+    metric_name: Optional[str] = None
+    metric_value: Optional[float] = None
+    is_roas: Optional[bool] = None
+
+
+class CampaignStatusUpdate(BaseModel):
+    status: Literal["ACTIVE", "PAUSED"]
 
 
 class DashboardSeriesPoint(BaseModel):
@@ -172,6 +285,12 @@ class DashboardSeriesPoint(BaseModel):
     spend: float = 0.0
     clicks: int = 0
     ctr: float = 0.0
+    revenue: float = 0.0
+    profit: float = 0.0
+    leads: float = 0.0
+    cpc: float = 0.0
+    cpm: float = 0.0
+    roas: float = 0.0
 
 
 class DashboardKpi(BaseModel):
@@ -213,6 +332,27 @@ class PageSummaryResponse(BaseModel):
     top_posts: list[PagePost] = []
     posts: list[PagePost] = []
     engagement_blocked: bool = False
+    # Raison Meta réelle quand l'engagement est indisponible (token de page non
+    # résolu, scope manquant, token expiré…). None si l'engagement est bien chargé.
+    engagement_blocked_reason: Optional[str] = None
+
+
+class ScheduledPost(BaseModel):
+    id: str
+    message: str = ""
+    type: str = "text"            # text | image | video | link | carousel
+    scheduled_time: Optional[str] = None  # ISO 8601 UTC
+    created_time: Optional[str] = None
+    permalink_url: Optional[str] = None
+    full_picture: Optional[str] = None
+    status: str = "scheduled"     # scheduled | published
+
+
+class ScheduledPostsResponse(BaseModel):
+    posts: list[ScheduledPost] = []
+    # Raison Meta réelle si la planification est indisponible (scope
+    # `pages_manage_posts` manquant, token de page non résolu…). None sinon.
+    blocked_reason: Optional[str] = None
 
 
 class CampaignDetailResponse(BaseModel):
@@ -263,3 +403,20 @@ class ChatImageUploadResponse(BaseModel):
     image_hash: str
     preview_url: Optional[str] = None
     error: Optional[str] = None
+
+
+class ChatVideoUploadResponse(BaseModel):
+    video_id: str
+    error: Optional[str] = None
+
+
+# ─── Sync (cache analytics) ──────────────────────────────────────────────────
+
+
+class SyncStatusResponse(BaseModel):
+    account_id: str
+    last_sync_at: Optional[str] = None
+    last_sync_status: Optional[str] = None  # success | error | running
+    last_error: Optional[str] = None
+    insights_synced_until: Optional[str] = None
+    running: bool = False

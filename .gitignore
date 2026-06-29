@@ -17,6 +17,15 @@ wheels/
 node_modules/
 dist/
 .vite/
-/uv.lock
 .claude/
 .impeccable
+.gstack/
+
+# Artefacts de travail hors-code (non versionnés)
+Nouveau dossier/
+AdMind-Vault/
+
+# Documentation : ne pousser que le README racine sur GitHub.
+# Les autres .md (CLAUDE.md, DESIGN.md, etc.) restent en local mais non versionnés.
+*.md
+!/README.md

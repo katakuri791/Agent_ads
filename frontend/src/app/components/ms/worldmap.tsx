@@ -70,11 +70,11 @@ export function WorldMap({ data = [], height = 360 }: { data?: GeoDatum[]; heigh
 
   return (
     <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
-      {!paths && <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#6B7280", fontSize: 13 }}>Map unavailable</div>}
+      {!paths && <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontSize: 13 }}>Map unavailable</div>}
       {paths && (
         <svg width="100%" height={height} style={{ display: "block" }}>
           {paths.map((p) => (
-            <path key={p.i} d={p.d} fill={p.color} stroke="#0A0C10" strokeWidth={0.5}
+            <path key={p.i} d={p.d} fill={p.color} stroke="var(--bg)" strokeWidth={0.5}
               style={{ transition: "fill 200ms, filter 150ms", cursor: p.data ? "pointer" : "default", filter: tip && tip.name === p.name ? "brightness(1.25)" : "none" }}
               onMouseMove={(e) => {
                 const r = wrapRef.current!.getBoundingClientRect();
@@ -85,27 +85,27 @@ export function WorldMap({ data = [], height = 360 }: { data?: GeoDatum[]; heigh
         </svg>
       )}
       {tip && (
-        <div style={{ position: "absolute", left: Math.min(w - 190, tip.x + 14), top: Math.max(0, tip.y - 10), width: 176, background: "#16181F", border: "1px solid #1E2128", borderRadius: 8, padding: "9px 11px", pointerEvents: "none", boxShadow: "0 12px 34px rgba(0,0,0,.55)", zIndex: 5 }}>
-          <div style={{ fontWeight: 600, fontSize: 12.5, color: "#F9FAFB", marginBottom: tip.data ? 6 : 0 }}>{tip.name}</div>
+        <div style={{ position: "absolute", left: Math.min(w - 190, tip.x + 14), top: Math.max(0, tip.y - 10), width: 176, background: "var(--surf-pop)", border: "1px solid var(--bd)", borderRadius: 8, padding: "9px 11px", pointerEvents: "none", boxShadow: "0 12px 34px rgba(0,0,0,.55)", zIndex: 5 }}>
+          <div style={{ fontWeight: 600, fontSize: 12.5, color: "var(--tx)", marginBottom: tip.data ? 6 : 0 }}>{tip.name}</div>
           {tip.data ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11.5 }}>
               {([["Spend", fmtMoney(tip.data.spend)], ["Impr.", fmtNum(tip.data.impressions)], ["Clicks", fmtNum(tip.data.clicks)], ["CTR", tip.data.ctr.toFixed(2) + "%"]] as Array<[string, string]>).map((row, k) => (
                 <div key={k} style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "#6B7280" }}>{row[0]}</span>
-                  <span style={{ color: "#D1D5DB", fontFamily: "JetBrains Mono" }}>{row[1]}</span>
+                  <span style={{ color: "var(--tx-dim)" }}>{row[0]}</span>
+                  <span style={{ color: "var(--tx-2)", fontFamily: "JetBrains Mono" }}>{row[1]}</span>
                 </div>
               ))}
             </div>
           ) : (
-            <div style={{ fontSize: 11, color: "#6B7280" }}>No active campaigns</div>
+            <div style={{ fontSize: 11, color: "var(--tx-dim)" }}>No active campaigns</div>
           )}
         </div>
       )}
       {paths && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
-          <span style={{ fontSize: 11, color: "#6B7280" }}>Low</span>
+          <span style={{ fontSize: 11, color: "var(--tx-dim)" }}>Low</span>
           <div style={{ flex: 1, maxWidth: 240, height: 8, borderRadius: 4, background: "linear-gradient(90deg, #BFD9FF, #2E7CE6, #0A57C2)" }} />
-          <span style={{ fontSize: 11, color: "#6B7280" }}>High spend</span>
+          <span style={{ fontSize: 11, color: "var(--tx-dim)" }}>High spend</span>
         </div>
       )}
     </div>

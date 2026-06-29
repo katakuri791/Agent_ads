@@ -1,4 +1,4 @@
-import { AuthUser, clearToken, getToken, setCachedUser, setToken } from "./auth";
+import { AuthUser, clearToken, getRefreshToken, getToken, setCachedUser, setRefreshToken, setToken } from "./auth";
 
 const API_BASE: string =
   (import.meta as any).env?.VITE_API_URL || "http://localhost:8000";
@@ -19,9 +19,9 @@ const REQUEST_TIMEOUT_MS = 45_000;
 /** `fetch` avec timeout (AbortController) et erreurs réseau converties en
  *  ApiError lisibles — au lieu des « Failed to fetch » / « Erreur inconnue »
  *  bruts qui ne disent rien à l'utilisateur. */
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (e: unknown) {
@@ -35,10 +35,51 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
   }
 }
 
+// Routes qui émettent/valident des tokens : ne JAMAIS tenter de refresh sur leur
+// 401 (sinon boucle infinie). Le reste des routes 401 → refresh transparent.
+const NO_REFRESH_PATHS = ["/auth/refresh", "/auth/login", "/auth/signup", "/auth/logout"];
+
+// Single-flight : si 10 requêtes prennent un 401 en même temps, on ne déclenche
+// qu'UN seul /auth/refresh — les autres attendent son résultat (anti-course :
+// sinon chacune consommerait/invaliderait le refresh token à tour de rôle).
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function tryRefresh(): Promise<boolean> {
+  const rt = getRefreshToken();
+  if (!rt) return false;
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const res = await fetchWithTimeout(`${API_BASE}/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: rt }),
+        });
+        if (!res.ok) return false;
+        const data = (await res.json()) as AuthResponse;
+        setToken(data.access_token);
+        if (data.refresh_token) setRefreshToken(data.refresh_token);
+        setCachedUser(data.user);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    // Libère le verrou une fois résolu (succès ou échec) pour le prochain cycle.
+    refreshInFlight.finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+}
+
+function shouldTryRefresh(path: string): boolean {
+  return !NO_REFRESH_PATHS.some((p) => path.startsWith(p));
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
   authed = true,
+  isRetry = false,
 ): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -50,6 +91,11 @@ async function request<T>(
   }
   const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
   if (!res.ok) {
+    // 401 sur une route normale : on tente un refresh silencieux puis on rejoue
+    // la requête UNE fois. Échec du refresh → session morte → logout.
+    if (res.status === 401 && authed && !isRetry && shouldTryRefresh(path)) {
+      if (await tryRefresh()) return request<T>(path, options, authed, true);
+    }
     let detail = res.statusText;
     try {
       const body = await res.json();
@@ -64,12 +110,15 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-async function requestForm<T>(path: string, form: FormData): Promise<T> {
+async function requestForm<T>(path: string, form: FormData, timeoutMs?: number, isRetry = false): Promise<T> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: "POST", body: form, headers });
+  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: "POST", body: form, headers }, timeoutMs);
   if (!res.ok) {
+    if (res.status === 401 && !isRetry && shouldTryRefresh(path)) {
+      if (await tryRefresh()) return requestForm<T>(path, form, timeoutMs, true);
+    }
     let detail = res.statusText;
     try {
       const body = await res.json();
@@ -85,6 +134,7 @@ async function requestForm<T>(path: string, form: FormData): Promise<T> {
 
 interface AuthResponse {
   access_token: string;
+  refresh_token?: string;
   token_type: string;
   user: AuthUser;
 }
@@ -128,11 +178,28 @@ export interface PagePost {
   shares: number;
 }
 
+export type ScheduledPostType = "text" | "image" | "video" | "link" | "carousel";
+export interface ScheduledPost {
+  id: string;
+  message: string;
+  type: ScheduledPostType;
+  scheduled_time?: string | null; // ISO 8601 UTC
+  created_time?: string | null;
+  permalink_url?: string | null;
+  full_picture?: string | null;
+  status: "scheduled" | "published";
+}
+export interface ScheduledPostsResponse {
+  posts: ScheduledPost[];
+  blocked_reason?: string | null;
+}
+
 export interface CampaignSummary {
   id: string;
   name: string;
   objective?: string | null;
   status?: string | null;
+  created_time?: string | null;
   daily_budget?: number | null;
   impressions: number;
   clicks: number;
@@ -140,6 +207,39 @@ export interface CampaignSummary {
   ctr: number;
   cpc: number;
   conversions: number;
+  roas: number;
+  revenue: number;
+  roi: number;
+  // Métrique de performance selon l'objectif (ROAS, CPL, CPE, CPM, CPC, CPI…).
+  metric_name?: string | null;
+  metric_value?: number | null;
+  is_roas?: boolean | null;
+}
+
+/** État de la dernière synchronisation Meta → Supabase pour un compte. */
+export interface SyncStatus {
+  account_id: string;
+  last_sync_at?: string | null;
+  last_sync_status?: "success" | "error" | "running" | null;
+  last_error?: string | null;
+  insights_synced_until?: string | null;
+  running: boolean;
+}
+
+/** Une clé API Meta connectée (multi-comptes). Le token n'est jamais renvoyé —
+ *  seul `meta_access_token_set` indique s'il est configuré. */
+export interface MetaAccount {
+  id: string;
+  label: string;
+  meta_access_token_set: boolean;
+  meta_ad_account_id: string | null;
+  meta_page_id: string | null;
+  meta_pixel_id: string | null;
+  preferred_currency: string | null;
+  timezone: string | null;
+  is_default: boolean;
+  /** "valid" | "expired" — passe à "expired" quand le worker détecte un token Meta mort. */
+  token_status: "valid" | "expired";
 }
 
 export interface DashboardKpi {
@@ -156,6 +256,12 @@ export interface DashboardSeriesPoint {
   spend: number;
   clicks: number;
   ctr: number;
+  revenue: number;
+  profit: number;
+  leads: number;
+  cpc: number;
+  cpm: number;
+  roas: number;
 }
 
 export interface DashboardResponse {
@@ -181,6 +287,8 @@ export interface PageSummary {
   top_posts: PagePost[];
   posts: PagePost[];
   engagement_blocked?: boolean;
+  // Raison Meta réelle quand l'engagement est indisponible (null si chargé).
+  engagement_blocked_reason?: string | null;
 }
 
 export interface AdSetDetail {
@@ -216,6 +324,8 @@ export interface CampaignDetail {
   demographics: DemoDatum[];
   placements: PlacementDatum[];
 }
+/** Onglet du panneau de détail = section chargée à la demande côté backend. */
+export type CampaignDetailSection = "adsets" | "ads" | "demographics" | "placements";
 
 export interface AudienceSummary {
   id: string;
@@ -279,6 +389,7 @@ export interface CampaignBriefStructured {
   link?: string | null;
   image_prompt?: string | null;
   image_hash?: string | null;
+  video_id?: string | null;
   estimated_reach?: string | null;
   notes?: string | null;
 }
@@ -290,7 +401,46 @@ export interface InsightAnswerStructured {
   recommendations: string[];
 }
 
-export type StructuredOutput = CampaignBriefStructured | InsightAnswerStructured;
+export interface QuestionOptionT {
+  value: string;
+  label: string;
+  hint?: string | null;
+}
+
+export interface QuestionT {
+  id: string;
+  label: string;
+  type: "single" | "multi" | "text" | "media";
+  options: QuestionOptionT[];
+  allow_custom: boolean;
+  placeholder?: string | null;
+  required: boolean;
+}
+
+export interface CampaignQuestionnaireStructured {
+  kind: "campaign_questionnaire";
+  title: string;
+  intro?: string | null;
+  questions: QuestionT[];
+  submit_label: string;
+}
+
+export interface CampaignCreatedStructured {
+  kind: "campaign_created";
+  campaign_id: string;
+  adset_id?: string | null;
+  ad_id?: string | null;
+  name: string;
+  objective?: string | null;
+  daily_budget?: number | null; // en centimes (devise du compte)
+  status: string; // toujours "PAUSED"
+}
+
+export type StructuredOutput =
+  | CampaignBriefStructured
+  | InsightAnswerStructured
+  | CampaignQuestionnaireStructured
+  | CampaignCreatedStructured;
 
 export interface ChatResponseT {
   conversation_id: string;
@@ -306,6 +456,26 @@ function rangeQuery(r: DateRange): string {
   return `date_preset=${encodeURIComponent(r.preset || "last_30d")}`;
 }
 
+/** `&account_id=…` pour cibler la clé Meta sélectionnée (multi-comptes). Vide si
+ *  aucun compte n'est sélectionné → le backend retombe sur le compte par défaut. */
+function acctParam(accountId?: string | null): string {
+  return accountId ? `&account_id=${encodeURIComponent(accountId)}` : "";
+}
+
+export type NotificationType = "sync_error" | "campaign_failed" | "token_expired";
+export interface AppNotification {
+  id: string;
+  type: NotificationType | string;
+  title: string;
+  body?: string | null;
+  read: boolean;
+  created_at: string;
+}
+export interface NotificationsResponse {
+  items: AppNotification[];
+  unread_count: number;
+}
+
 export const api = {
   async signup(email: string, password: string, fullName?: string): Promise<AuthUser> {
     const data = await request<AuthResponse>(
@@ -314,6 +484,7 @@ export const api = {
       false,
     );
     setToken(data.access_token);
+    if (data.refresh_token) setRefreshToken(data.refresh_token);
     setCachedUser(data.user);
     return data.user;
   },
@@ -325,6 +496,7 @@ export const api = {
       false,
     );
     setToken(data.access_token);
+    if (data.refresh_token) setRefreshToken(data.refresh_token);
     setCachedUser(data.user);
     return data.user;
   },
@@ -351,8 +523,21 @@ export const api = {
   },
 
   logout(): void {
+    // Révoque le refresh token côté serveur (best-effort, non bloquant), puis
+    // purge le stockage local quoi qu'il arrive.
+    const rt = getRefreshToken();
+    if (rt) {
+      request("/auth/logout", { method: "POST", body: JSON.stringify({ refresh_token: rt }) }, false).catch(() => { /* best-effort */ });
+    }
     clearToken();
   },
+
+  // ─── Notifications ─────────────────────────────────────────────────────────
+  listNotifications: () => request<NotificationsResponse>("/notifications"),
+  markNotificationRead: (id: string) =>
+    request<{ ok: boolean }>(`/notifications/${encodeURIComponent(id)}`, { method: "PATCH" }),
+  markAllNotificationsRead: () =>
+    request<{ ok: boolean }>("/notifications/read-all", { method: "PATCH" }),
 
   getSettings: () => request<MetaSettings>("/settings"),
 
@@ -371,41 +556,165 @@ export const api = {
       { method: "POST" },
     ),
 
-  getPageInfo: () => request<PageInfo>("/meta/page-info"),
-  getPageInsights: (days: number = 28) =>
-    request<PageInsights>(`/meta/page-insights?days=${days}`),
-  getPagePosts: (limit: number = 10) =>
-    request<PagePost[]>(`/meta/page-posts?limit=${limit}`),
+  // ── Comptes Meta (multi-clés) ──────────────────────────────────────────────
+  listAccounts: () => request<MetaAccount[]>("/meta/accounts"),
 
-  getPageSummary: () => request<PageSummary>("/meta/page-summary"),
+  createAccount: (body: Partial<{
+    label: string;
+    meta_access_token: string;
+    meta_ad_account_id: string;
+    meta_page_id: string;
+    meta_pixel_id: string;
+    preferred_currency: string;
+    timezone: string;
+    is_default: boolean;
+  }>) => request<MetaAccount>("/meta/accounts", { method: "POST", body: JSON.stringify(body) }),
 
-  getCampaignDetail: (campaignId: string, range: DateRange = { preset: "last_30d" }) =>
-    request<CampaignDetail>(`/meta/campaigns/${encodeURIComponent(campaignId)}/detail?${rangeQuery(range)}`),
+  updateAccount: (id: string, body: Partial<{
+    label: string;
+    meta_access_token: string;
+    meta_ad_account_id: string;
+    meta_page_id: string;
+    meta_pixel_id: string;
+    preferred_currency: string;
+    timezone: string;
+    is_default: boolean;
+  }>) => request<MetaAccount>(`/meta/accounts/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
 
-  getAudiences: () => request<AudienceSummary[]>("/meta/audiences"),
+  deleteAccount: (id: string) =>
+    request<{ ok: boolean }>(`/meta/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
-  getAudienceReach: (days: number | "all" = 30) =>
+  testAccount: (id: string) =>
+    request<{ ok: boolean; account_name?: string; error?: string }>(
+      `/meta/accounts/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    ),
+
+  getPageInfo: (accountId?: string | null) =>
+    request<PageInfo>(`/meta/page-info?_=1${acctParam(accountId)}`),
+  getPageInsights: (days: number = 28, accountId?: string | null) =>
+    request<PageInsights>(`/meta/page-insights?days=${days}${acctParam(accountId)}`),
+  getPagePosts: (limit: number = 10, accountId?: string | null) =>
+    request<PagePost[]>(`/meta/page-posts?limit=${limit}${acctParam(accountId)}`),
+
+  getPageSummary: (accountId?: string | null) =>
+    request<PageSummary>(`/meta/page-summary?_=1${acctParam(accountId)}`),
+
+  /** Publie un post sur la page Facebook (texte, lien et/ou image). */
+  createPagePost: (
+    body: { message?: string; link?: string; image?: File | null; video?: File | null },
+    accountId?: string | null,
+  ) => {
+    const form = new FormData();
+    form.append("message", body.message || "");
+    if (body.link) form.append("link", body.link);
+    if (body.image) form.append("image", body.image);
+    if (body.video) form.append("video", body.video);
+    return requestForm<{ ok: boolean; post_id?: string | null }>(
+      `/meta/page-posts?_=1${acctParam(accountId)}`,
+      form,
+    );
+  },
+
+  // ── Posts planifiés (Schedule) ─────────────────────────────────────────────
+  getScheduledPosts: (accountId?: string | null) =>
+    request<ScheduledPostsResponse>(`/meta/scheduled-posts?_=1${acctParam(accountId)}`),
+
+  /** Planifie un post (texte/lien/photo/vidéo). `scheduledTime` = ISO 8601. */
+  createScheduledPost: (
+    body: { scheduledTime: string; message?: string; link?: string; image?: File | null; video?: File | null },
+    accountId?: string | null,
+  ) => {
+    const form = new FormData();
+    form.append("scheduled_time", body.scheduledTime);
+    form.append("message", body.message || "");
+    if (body.link) form.append("link", body.link);
+    if (body.image) form.append("image", body.image);
+    if (body.video) form.append("video", body.video);
+    return requestForm<{ ok: boolean; post_id?: string | null }>(
+      `/meta/scheduled-posts?_=1${acctParam(accountId)}`,
+      form,
+      180_000,
+    );
+  },
+
+  publishScheduledPost: (postId: string, accountId?: string | null) =>
+    request<{ ok: boolean }>(
+      `/meta/scheduled-posts/${encodeURIComponent(postId)}/publish?_=1${acctParam(accountId)}`,
+      { method: "POST" },
+    ),
+
+  deleteScheduledPost: (postId: string, accountId?: string | null) =>
+    request<{ ok: boolean }>(
+      `/meta/scheduled-posts/${encodeURIComponent(postId)}?_=1${acctParam(accountId)}`,
+      { method: "DELETE" },
+    ),
+
+  // `section` charge un seul onglet du panneau de détail (adsets|ads|demographics|
+  // placements) → ~2 appels Meta au lieu de 6. Les autres clés reviennent vides.
+  getCampaignDetail: (
+    campaignId: string,
+    range: DateRange = { preset: "last_30d" },
+    accountId?: string | null,
+    section?: CampaignDetailSection | null,
+  ) =>
+    request<CampaignDetail>(
+      `/meta/campaigns/${encodeURIComponent(campaignId)}/detail?${rangeQuery(range)}${acctParam(accountId)}${section ? `&section=${section}` : ""}`,
+    ),
+
+  getAudiences: (accountId?: string | null) =>
+    request<AudienceSummary[]>(`/meta/audiences?_=1${acctParam(accountId)}`),
+
+  getAudienceReach: (days: number | "all" = 30, accountId?: string | null) =>
     request<AudienceReach>(
-      days === "all" ? `/meta/audience-reach?period=all` : `/meta/audience-reach?days=${days}`,
+      (days === "all" ? `/meta/audience-reach?period=all` : `/meta/audience-reach?days=${days}`) + acctParam(accountId),
     ),
 
-  getCampaigns: (range: DateRange = { preset: "last_30d" }) =>
-    request<CampaignSummary[]>(`/meta/campaigns?${rangeQuery(range)}`),
+  getCampaigns: (range: DateRange = { preset: "last_30d" }, accountId?: string | null) =>
+    request<CampaignSummary[]>(`/meta/campaigns?${rangeQuery(range)}${acctParam(accountId)}`),
 
-  getDashboard: (days: number | "all" = 30) =>
+  updateCampaignStatus: (campaignId: string, status: "ACTIVE" | "PAUSED", accountId?: string | null) =>
+    request<{ ok: boolean; status: string }>(
+      `/meta/campaigns/${encodeURIComponent(campaignId)}/status?_=1${acctParam(accountId)}`,
+      { method: "PATCH", body: JSON.stringify({ status }) },
+    ),
+
+  getDashboard: (days: number | "all" = 30, accountId?: string | null, since?: string, until?: string) =>
     request<DashboardResponse>(
-      days === "all" ? `/meta/dashboard?period=all` : `/meta/dashboard?days=${days}`,
+      (days === "all"
+        ? `/meta/dashboard?period=all`
+        : since && until
+          ? `/meta/dashboard?days=${days}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`
+          : `/meta/dashboard?days=${days}`) + acctParam(accountId),
     ),
 
-  search: (q: string) =>
-    request<SearchResponse>(`/meta/search?q=${encodeURIComponent(q)}`),
+  search: (q: string, accountId?: string | null) =>
+    request<SearchResponse>(`/meta/search?q=${encodeURIComponent(q)}${acctParam(accountId)}`),
 
-  uploadChatImage: (file: File) => {
+  // ── Sync (cache analytics) ─────────────────────────────────────────────────
+  getSyncStatus: (accountId?: string | null) =>
+    request<SyncStatus>(`/api/sync/status?_=1${acctParam(accountId)}`),
+
+  triggerSync: (accountId: string) =>
+    request<SyncStatus>(`/api/sync/${encodeURIComponent(accountId)}`, { method: "POST" }),
+
+  uploadChatImage: (file: File, accountId?: string | null) => {
     const form = new FormData();
     form.append("file", file);
     return requestForm<{ image_hash: string; preview_url?: string; error?: string }>(
-      "/chat/upload-image",
+      `/chat/upload-image?_=1${acctParam(accountId)}`,
       form,
+    );
+  },
+
+  uploadChatVideo: (file: File, accountId?: string | null) => {
+    const form = new FormData();
+    form.append("file", file);
+    // Vidéo = upload plus lourd que les autres requêtes → timeout étendu (3 min).
+    return requestForm<{ video_id: string; error?: string }>(
+      `/chat/upload-video?_=1${acctParam(accountId)}`,
+      form,
+      180_000,
     );
   },
 
@@ -425,13 +734,18 @@ export const api = {
       `/conversations/${conversationId}/messages`,
     ),
 
-  chat: (message: string, conversationId?: string, attachedImageHash?: string | null) =>
+  // QCM de création de campagne (déterministe, généré côté backend en JSON).
+  getCampaignQuestionnaire: () =>
+    request<CampaignQuestionnaireStructured>("/chat/campaign-questionnaire"),
+
+  chat: (message: string, conversationId?: string, attachedImageHash?: string | null, accountId?: string | null) =>
     request<ChatResponseT>("/chat", {
       method: "POST",
       body: JSON.stringify({
         message,
         conversation_id: conversationId,
         attached_image_hash: attachedImageHash || undefined,
+        account_id: accountId || undefined,
       }),
     }),
 };

@@ -9,6 +9,7 @@ export interface AuthUser {
 }
 
 const TOKEN_KEY = "metainsight.token";
+const REFRESH_KEY = "metainsight.refresh_token";
 const USER_KEY = "metainsight.user";
 
 export function getToken(): string | null {
@@ -19,8 +20,17 @@ export function setToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token);
 }
 
+export function getRefreshToken(): string | null {
+  return localStorage.getItem(REFRESH_KEY);
+}
+
+export function setRefreshToken(token: string) {
+  localStorage.setItem(REFRESH_KEY, token);
+}
+
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(REFRESH_KEY);
   localStorage.removeItem(USER_KEY);
 }
 

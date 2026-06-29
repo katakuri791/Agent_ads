@@ -1,6 +1,8 @@
 packages:
   - '.'
+# Autorise les build scripts des paquets à binaire natif (vite/vitest/tailwind).
+# Sans ça, un `pnpm install` neuf (CI) les ignore et le build/les tests cassent.
 allowBuilds:
-  '@tailwindcss/oxide': set this to true or false
-  core-js: set this to true or false
-  esbuild: set this to true or false
+  '@tailwindcss/oxide': true
+  core-js: true
+  esbuild: true

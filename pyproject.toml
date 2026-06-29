@@ -17,4 +17,19 @@ dependencies = [
     "pyjwt>=2.9",
     "pydantic[email]>=2.9",
     "python-multipart>=0.0.9",
+    "apscheduler>=3.10",
+    "sentry-sdk[fastapi]>=2.0",
+    "redis>=5.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "fakeredis>=2.20",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
