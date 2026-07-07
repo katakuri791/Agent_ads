@@ -28,11 +28,18 @@ function resolveClass(theme: ThemeMode): "dark" | "light" | "dim" {
   return theme;
 }
 
+const THEME_BG: Record<"dark" | "light" | "dim", string> = {
+  dark: "#0A0C10", light: "#F3F5F9", dim: "#12151C",
+};
+
 function applyTheme(theme: ThemeMode, accent: string) {
   const el = document.documentElement;
+  const cls = resolveClass(theme);
   el.classList.remove("dark", "light", "dim");
-  el.classList.add(resolveClass(theme));
+  el.classList.add(cls);
   el.style.setProperty("--accent", accent);
+  // Keep the <html> background (set pre-paint by the no-flash script) in sync.
+  el.style.background = THEME_BG[cls];
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

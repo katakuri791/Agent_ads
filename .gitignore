@@ -29,3 +29,6 @@ AdMind-Vault/
 # Les autres .md (CLAUDE.md, DESIGN.md, etc.) restent en local mais non versionnés.
 *.md
 !/README.md
+
+# Captures d'écran de travail (non versionnées)
+Capture d*.png

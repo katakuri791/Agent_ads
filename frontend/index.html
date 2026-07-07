@@ -6,6 +6,22 @@
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>MetaScope — Facebook Ads Analytics</title>
       <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
+      <!-- No-flash theme: apply the saved theme class + bg before first paint so
+           the bootstrap loader never flashes the dark default under a light theme. -->
+      <script>
+        (function () {
+          try {
+            var t = localStorage.getItem('ui_theme') || 'dark';
+            var cls = t;
+            if (t === 'system') cls = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+            if (cls !== 'dark' && cls !== 'light' && cls !== 'dim') cls = 'dark';
+            var el = document.documentElement;
+            el.classList.add(cls);
+            el.style.setProperty('--accent', localStorage.getItem('ui_accent') || '#1877F2');
+            el.style.background = cls === 'light' ? '#F3F5F9' : (cls === 'dim' ? '#12151C' : '#0A0C10');
+          } catch (e) {}
+        })();
+      </script>
     </head>
 
     <body>
