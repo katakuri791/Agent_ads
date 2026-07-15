@@ -41,6 +41,10 @@ MAX_BACKFILL_DAYS = 1095
 _INSIGHT_FIELDS = [
     "spend", "impressions", "clicks", "reach", "frequency", "cpc", "cpm", "ctr",
     "actions", "action_values", "campaign_id", "adset_id", "ad_id",
+    # Clics détaillés (Link clicks / clics uniques / clics sortants).
+    "inline_link_clicks", "unique_clicks", "outbound_clicks",
+    # Métriques vidéo (vues 3 s, ThruPlay, quartiles de complétion, lectures).
+    *metrics.VIDEO_SOURCE_FIELDS.keys(),
 ]
 
 # (type stocké, paramètre breakdowns Meta, clé primaire, clé secondaire)
@@ -219,6 +223,10 @@ def _sync_insights(account: AdAccount, account_id: str, windows: list[tuple[str,
             actions = _plain(r.get("actions"))
             action_values = _plain(r.get("action_values"))
             conv = metrics.extract_conversion_columns(actions, action_values)
+            # Colonnes vidéo : chaque champ Meta est une liste brute → _plain avant somme.
+            video = metrics.extract_video_columns(
+                {src: _plain(r.get(src)) for src in metrics.VIDEO_SOURCE_FIELDS}
+            )
             rows.append({
                 "ad_account_id": account_id,
                 "ad_id": r.get("ad_id"),
@@ -233,7 +241,12 @@ def _sync_insights(account: AdAccount, account_id: str, windows: list[tuple[str,
                 "cpc": _safe_float(r.get("cpc")),
                 "cpm": _safe_float(r.get("cpm")),
                 "ctr": _safe_float(r.get("ctr")),
+                # Clics détaillés (outbound_clicks = liste de {action_type, value}).
+                "inline_link_clicks": _safe_int(r.get("inline_link_clicks")),
+                "unique_clicks": _safe_int(r.get("unique_clicks")),
+                "outbound_clicks": metrics.sum_value_list(_plain(r.get("outbound_clicks"))),
                 **conv,
+                **video,
                 "actions": actions,
                 "action_values": action_values,
                 "updated_at": _now_iso(),
@@ -244,6 +257,57 @@ def _sync_insights(account: AdAccount, account_id: str, windows: list[tuple[str,
             time.sleep(0.3)  # respiration anti rate-limit pendant le gros backfill
     logger.info(
         "sync[%s]: %d daily insight rows over %d window(s) (%s)",
+        account_id, total, len(windows), "backfill" if is_backfill else "incremental",
+    )
+
+
+def _sync_platform_insights(account: AdAccount, account_id: str,
+                            windows: list[tuple[str, str]], is_backfill: bool) -> None:
+    """Insights niveau ad splittés par plateforme (breakdown publisher_platform)
+    → table fb_insights_platform_daily. Alimente le toggle Facebook/Instagram de
+    l'Overview et de la liste des campagnes avec des métriques complètes (revenue,
+    ROAS, conversions, vidéo…) par plateforme."""
+    total = 0
+    for since, until in windows:
+        params = {"time_range": {"since": since, "until": until},
+                  "level": "ad", "time_increment": 1,
+                  "breakdowns": "publisher_platform"}
+        rows = []
+        for r in account.get_insights(fields=_INSIGHT_FIELDS, params=params):
+            actions = _plain(r.get("actions"))
+            action_values = _plain(r.get("action_values"))
+            conv = metrics.extract_conversion_columns(actions, action_values)
+            video = metrics.extract_video_columns(
+                {src: _plain(r.get(src)) for src in metrics.VIDEO_SOURCE_FIELDS}
+            )
+            rows.append({
+                "ad_account_id": account_id,
+                "ad_id": r.get("ad_id"),
+                "adset_id": r.get("adset_id"),
+                "campaign_id": r.get("campaign_id"),
+                "date": r.get("date_start"),
+                "platform": (r.get("publisher_platform") or "unknown"),
+                "spend": _safe_float(r.get("spend")),
+                "impressions": _safe_int(r.get("impressions")),
+                "clicks": _safe_int(r.get("clicks")),
+                "reach": _safe_int(r.get("reach")),
+                "frequency": _safe_float(r.get("frequency")),
+                "cpc": _safe_float(r.get("cpc")),
+                "cpm": _safe_float(r.get("cpm")),
+                "ctr": _safe_float(r.get("ctr")),
+                "inline_link_clicks": _safe_int(r.get("inline_link_clicks")),
+                "unique_clicks": _safe_int(r.get("unique_clicks")),
+                "outbound_clicks": metrics.sum_value_list(_plain(r.get("outbound_clicks"))),
+                **conv,
+                **video,
+                "updated_at": _now_iso(),
+            })
+        db.upsert_fb_platform_insights(rows)
+        total += len(rows)
+        if is_backfill:
+            time.sleep(0.3)
+    logger.info(
+        "sync[%s]: %d platform insight rows over %d window(s) (%s)",
         account_id, total, len(windows), "backfill" if is_backfill else "incremental",
     )
 
@@ -363,12 +427,17 @@ def record_sync_error(account: dict, exc: Exception) -> None:
             sentry_sdk.capture_exception(exc)
         except Exception:  # noqa: BLE001 — l'observabilité ne doit jamais casser le sync
             pass
+        # L'erreur technique brute part dans les logs (debug), PAS dans la notif.
+        logger.warning("fb_sync: échec sync (compte=%s) : %s", account.get("id"), msg)
         if user_id:
             notifications.create_notification(
                 user_id,
                 "sync_error",
-                f"Échec de synchronisation — {label}",
-                (msg or "Erreur inconnue")[:300],
+                f"Mise à jour des données impossible — {label}",
+                "Les données Meta n'ont pas pu être mises à jour cette fois. "
+                "On réessaiera automatiquement ; tu peux aussi relancer avec le bouton "
+                "de synchronisation. Si le problème persiste, vérifie ta connexion Meta "
+                "dans les Paramètres.",
                 dedup=True,
             )
 
@@ -401,6 +470,7 @@ def sync_account(account: dict) -> dict:
     # APRÈS _sync_campaigns.
     windows, is_backfill = _date_windows(ad_account_id, state)
     _sync_insights(fb_account, ad_account_id, windows, is_backfill)
+    _sync_platform_insights(fb_account, ad_account_id, windows, is_backfill)
     _sync_breakdowns(fb_account, ad_account_id, windows, is_backfill)
 
     db.set_fb_sync_state(

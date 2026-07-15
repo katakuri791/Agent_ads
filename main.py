@@ -49,18 +49,22 @@ from backend.db import (
     save_message,
     set_default_meta_account,
     touch_conversation,
+    update_fb_ad_status,
     update_fb_campaign_status,
     update_meta_account,
     upsert_user_settings,
 )
-from backend import dashboard, facebook_sync, meta_pages, notifications
+from backend import dashboard, facebook_sync, meta_instagram, meta_pages, notifications
 from backend.db import (
     get_fb_sync_state as db_get_fb_sync_state,
 )
 from backend.meta_tools import (
+    audience_reach_live,
     get_campaign_detail,
     list_campaigns_with_insights,
     list_custom_audiences,
+    search_geo_locations,
+    set_ad_status,
     set_campaign_status,
     test_connection,
     upload_image_bytes,
@@ -68,9 +72,15 @@ from backend.meta_tools import (
 )
 from backend.ratelimit import check_rate_limit
 from backend.schemas import (
+    AccountUser,
+    AccountUsersResponse,
     AudienceReachResponse,
     AudienceSummary,
     AuthResponse,
+    BillingResponse,
+    InstagramResponse,
+    IgPost,
+    IgProfile,
     CampaignCreated,
     CampaignDetailResponse,
     CampaignQuestionnaire,
@@ -309,6 +319,16 @@ def _resolve_account(
     if need_page and not acct.get("meta_page_id"):
         raise HTTPException(status_code=400, detail="Meta page id is required.")
     return acct
+
+
+_VALID_PLATFORMS = {"facebook", "instagram", "audience_network", "messenger"}
+
+
+def _norm_platform(platform: Optional[str]) -> Optional[str]:
+    """Normalise le filtre plateforme (toggle Facebook/Instagram). None = toutes
+    plateformes (comportement historique). Une valeur inconnue est ignorée."""
+    p = (platform or "").strip().lower()
+    return p if p in _VALID_PLATFORMS else None
 
 
 def _preset_to_days(date_preset: Optional[str]) -> tuple[int, bool]:
@@ -778,6 +798,107 @@ def route_meta_campaign_detail(
     return CampaignDetailResponse(**out)
 
 
+@app.get("/meta/geo-search")
+def route_meta_geo_search(
+    q: str = Query(..., min_length=1),
+    location_types: str = Query("city"),  # csv : "city" | "region" | "city,region"
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> list[dict]:
+    """Autocomplétion de vraies localisations Meta (villes/régions) pour le ciblage
+    géographique d'une campagne — clé de ciblage + région + pays."""
+    settings = _resolve_account(user.id, account_id, need_account=True)
+    types = [t.strip() for t in location_types.split(",") if t.strip()] or ["city"]
+    try:
+        return search_geo_locations(settings["meta_access_token"], q, types)
+    except Exception as exc:
+        raise _meta_http_error(exc)
+
+
+@app.get("/meta/page-best-times")
+def route_meta_page_best_times(
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    """Activité réelle des abonnés de la Page par heure (meilleur moment de publication)."""
+    settings = _resolve_account(user.id, account_id, need_page=True)
+    try:
+        return meta_pages.get_fans_online_by_hour(
+            settings["meta_page_id"], settings["meta_access_token"]
+        )
+    except Exception as exc:
+        raise _meta_http_error(exc)
+
+
+@app.get("/meta/account-users", response_model=AccountUsersResponse)
+def route_meta_account_users(
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> AccountUsersResponse:
+    """Personnes ayant accès au compte publicitaire Meta + leur rôle réel.
+    Requiert le scope `business_management` sur le token → sinon on remonte la
+    raison Meta exacte (aucune liste inventée)."""
+    settings = _resolve_account(user.id, account_id, need_account=True)
+    try:
+        users = meta_pages.account_users(
+            settings["meta_ad_account_id"], settings["meta_access_token"]
+        )
+    except meta_pages.GraphError as exc:
+        # Erreur « attendue » (accès refusé / permission manquante) → 200 avec un
+        # message clair et lisible (pas l'erreur technique brute de Meta).
+        logger.info("account_users blocked: %s", exc)
+        return AccountUsersResponse(users=[], blocked_reason=meta_pages.ACCESS_BLOCKED_MSG)
+    except Exception as exc:
+        raise _meta_http_error(exc)
+    return AccountUsersResponse(users=[AccountUser(**u) for u in users])
+
+
+@app.get("/meta/billing", response_model=BillingResponse)
+def route_meta_billing(
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> BillingResponse:
+    """Type de paiement + solde/dépense/seuil du compte pub Meta + historique de
+    dépense mensuel (reconstruit depuis les vraies dépenses du cache)."""
+    settings = _resolve_account(user.id, account_id, need_account=True)
+    try:
+        billing = meta_pages.account_billing(
+            settings["meta_ad_account_id"], settings["meta_access_token"]
+        )
+    except Exception as exc:
+        raise _meta_http_error(exc)
+    try:
+        history = dashboard.monthly_spend(settings["meta_ad_account_id"])
+    except Exception:
+        history = []
+    return BillingResponse(**billing, history=history)
+
+
+@app.get("/meta/instagram", response_model=InstagramResponse)
+def route_meta_instagram(
+    limit: int = Query(24, ge=1, le=50),
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> InstagramResponse:
+    """Profil Instagram + posts récents avec leur portée (reach = « combien de
+    gens ont vu »). L'IG est résolu depuis la Page Facebook du compte. Si aucun
+    compte IG n'est lié / scope manquant → blocked_reason (aucune fausse donnée)."""
+    settings = _resolve_account(user.id, account_id, need_page=True)
+    try:
+        data = meta_instagram.get_overview(
+            settings["meta_page_id"], settings["meta_access_token"], limit=limit
+        )
+    except meta_pages.GraphError as exc:
+        # Erreur « attendue » (pas d'IG lié / scope) → 200 + raison pour un état UI clair.
+        return InstagramResponse(profile=None, posts=[], blocked_reason=str(exc))
+    except Exception as exc:
+        raise _meta_http_error(exc)
+    return InstagramResponse(
+        profile=IgProfile(**data["profile"]),
+        posts=[IgPost(**p) for p in data["posts"]],
+    )
+
+
 @app.get("/meta/audiences", response_model=list[AudienceSummary])
 def route_meta_audiences(
     account_id: Optional[str] = Query(None),
@@ -798,12 +919,24 @@ def route_meta_audience_reach(
     days: int = Query(30, ge=1, le=90),
     period: Optional[str] = Query(None),
     account_id: Optional[str] = Query(None),
+    campaign_id: Optional[str] = Query(None),  # None = tout le compte
+    platform: Optional[str] = Query(None),     # facebook | instagram | None
     user: UserPublic = Depends(get_current_user),
 ) -> AudienceReachResponse:
     settings = _resolve_account(user.id, account_id, need_account=True)
     all_time = (period or "").lower() == "all"
+    plat = _norm_platform(platform)
     try:
-        reach = dashboard.get_audience_reach(settings["meta_ad_account_id"], days=days, all_time=all_time)
+        # Campagne précise et/ou plateforme → live Meta (hors cache, à la demande).
+        # Sinon → cache Supabase (rapide, comportement historique).
+        if campaign_id or plat:
+            reach = audience_reach_live(
+                settings["meta_access_token"], settings["meta_ad_account_id"],
+                campaign_id=(campaign_id or None), platform=plat,
+                days=days, all_time=all_time,
+            )
+        else:
+            reach = dashboard.get_audience_reach(settings["meta_ad_account_id"], days=days, all_time=all_time)
     except Exception as exc:
         raise _meta_http_error(exc)
     return AudienceReachResponse(**reach)
@@ -815,13 +948,15 @@ def route_meta_campaigns(
     since: Optional[str] = Query(None),
     until: Optional[str] = Query(None),
     account_id: Optional[str] = Query(None),
+    platform: Optional[str] = Query(None),  # facebook | instagram | None (toutes)
     user: UserPublic = Depends(get_current_user),
 ) -> list[CampaignSummary]:
     settings = _resolve_account(user.id, account_id, need_account=True)
     days, all_time = _preset_to_days(date_preset)
     try:
         rows = dashboard.list_campaigns(
-            settings["meta_ad_account_id"], days=days, all_time=all_time, since=since, until=until,
+            settings["meta_ad_account_id"], days=days, all_time=all_time,
+            since=since, until=until, platform=_norm_platform(platform),
         )
     except Exception as exc:
         raise _meta_http_error(exc)
@@ -845,6 +980,23 @@ def route_update_campaign_status(
     return {"ok": True, "status": body.status}
 
 
+@app.patch("/meta/ads/{ad_id}/status")
+def route_update_ad_status(
+    ad_id: str,
+    body: CampaignStatusUpdate,
+    account_id: Optional[str] = Query(None),
+    user: UserPublic = Depends(get_current_user),
+) -> dict:
+    """Active (ACTIVE) ou met en pause (PAUSED) une ad individuelle. Met aussi à jour
+    le cache (fb_ads) pour un affichage immédiat dans le panneau de détail."""
+    settings = _resolve_account(user.id, account_id, need_account=True)
+    ok, msg = set_ad_status(settings["meta_access_token"], ad_id, body.status)
+    if not ok:
+        raise HTTPException(status_code=502, detail=msg)
+    update_fb_ad_status(ad_id, body.status)
+    return {"ok": True, "status": body.status}
+
+
 @app.get("/meta/dashboard", response_model=DashboardResponse)
 def route_meta_dashboard(
     days: int = Query(30, ge=1, le=90),
@@ -852,13 +1004,16 @@ def route_meta_dashboard(
     since: Optional[str] = Query(None),
     until: Optional[str] = Query(None),
     account_id: Optional[str] = Query(None),
+    platform: Optional[str] = Query(None),  # facebook | instagram | None (toutes)
     user: UserPublic = Depends(get_current_user),
 ) -> DashboardResponse:
     settings = _resolve_account(user.id, account_id, need_account=True)
     all_time = (period or "").lower() == "all"
+    plat = _norm_platform(platform)
     try:
         data = dashboard.get_account_dashboard(
-            settings["meta_ad_account_id"], days=days, all_time=all_time, since=since, until=until,
+            settings["meta_ad_account_id"], days=days, all_time=all_time,
+            since=since, until=until, platform=plat,
         )
     except Exception as exc:
         raise _meta_http_error(exc)
@@ -943,7 +1098,8 @@ def route_meta_dashboard(
     top: list[CampaignSummary] = []
     try:
         camps = dashboard.list_campaigns(
-            settings["meta_ad_account_id"], days=days, all_time=all_time, since=since, until=until,
+            settings["meta_ad_account_id"], days=days, all_time=all_time,
+            since=since, until=until, platform=plat,
         )
         camps.sort(
             key=lambda c: (

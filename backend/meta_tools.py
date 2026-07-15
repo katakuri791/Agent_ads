@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -7,6 +8,7 @@ from typing import Any, Optional
 import requests
 from requests.adapters import HTTPAdapter
 from facebook_business.adobjects.adaccount import AdAccount
+from facebook_business.adobjects.ad import Ad
 from facebook_business.adobjects.adimage import AdImage
 from facebook_business.adobjects.campaign import Campaign
 from facebook_business.api import FacebookAdsApi
@@ -123,6 +125,8 @@ def build_meta_tools(
         age_max: int = 65,
         optimization_goal: str = "LINK_CLICKS",
         cta: str = "LEARN_MORE",
+        city_key: str = "",
+        radius_km: int = 0,
     ) -> str:
         """Crée une campagne Meta Ads complète (campagne + ad set + creative + ad), tout en PAUSED.
 
@@ -137,6 +141,10 @@ def build_meta_tools(
             image_hash: hash hex d'une photo déjà uploadée (utiliser upload_image / upload_image_from_url). Sert de miniature si video_id est fourni.
             video_id: identifiant d'une vidéo déjà uploadée (annonce vidéo). Prioritaire sur image_hash pour le format.
             countries: liste de codes pays ISO-2 (ex: ["MA", "FR"])
+            city_key: clé Meta d'une ville (via search_geo_locations) pour cibler
+                autour d'une ville plutôt qu'un pays entier. Vide = ciblage par pays.
+            radius_km: rayon en km autour de la ville (Meta : 1–80 km). Défaut 25 si
+                city_key est fourni sans rayon.
             age_min: âge minimum ciblé
             age_max: âge maximum ciblé
             optimization_goal: doit être compatible avec l'objective.
@@ -257,6 +265,17 @@ def build_meta_tools(
         except FacebookRequestError as e:
             return _record_failure("campaign", _fmt_fb_error(e, "la création de la campagne"))
 
+        # Ciblage géographique : par ville + rayon (km) si une clé de ville Meta est
+        # fournie, sinon par pays. Meta borne le rayon des villes à 1–80 km.
+        city_key = (city_key or "").strip()
+        if city_key:
+            radius = radius_km if radius_km and radius_km > 0 else 25
+            radius = max(1, min(80, int(radius)))
+            geo_locations: dict[str, Any] = {
+                "cities": [{"key": city_key, "radius": radius, "distance_unit": "kilometer"}]
+            }
+        else:
+            geo_locations = {"countries": countries}
         try:
             adset = account.create_ad_set(
                 params={
@@ -267,7 +286,7 @@ def build_meta_tools(
                     "optimization_goal": optimization_goal,
                     "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
                     "targeting": {
-                        "geo_locations": {"countries": countries},
+                        "geo_locations": geo_locations,
                         "age_min": age_min,
                         "age_max": age_max,
                     },
@@ -549,6 +568,74 @@ def set_campaign_status(access_token: str, campaign_id: str, status: str) -> tup
         return False, _fmt_fb_error(exc, "la mise à jour du statut de la campagne")
     except Exception as exc:
         return False, f"❌ Erreur : {exc}"
+
+
+def set_ad_status(access_token: str, ad_id: str, status: str) -> tuple[bool, str]:
+    """Active (ACTIVE) ou met en pause (PAUSED) une ad individuelle via la Marketing API.
+
+    Retourne (ok, message). Le message contient l'erreur Meta complète en cas d'échec.
+    Note : Meta refuse d'activer une ad si son ad set / sa campagne parent est en pause
+    — l'erreur Meta remontée l'explique alors clairement à l'utilisateur.
+    """
+    status = (status or "").strip().upper()
+    if status not in ("ACTIVE", "PAUSED"):
+        return False, "Statut invalide (attendu ACTIVE ou PAUSED)."
+    try:
+        _init_api(access_token)
+        Ad(ad_id).api_update(params={"status": status})
+        return True, status
+    except FacebookRequestError as exc:
+        return False, _fmt_fb_error(exc, "la mise à jour du statut de l'ad")
+    except Exception as exc:
+        return False, f"❌ Erreur : {exc}"
+
+
+def search_geo_locations(
+    access_token: str, query: str, location_types: Optional[list[str]] = None, limit: int = 15
+) -> list[dict[str, Any]]:
+    """Recherche de vraies localisations Meta (villes / régions) pour le ciblage.
+
+    Utilise l'endpoint Graph `search?type=adgeolocation`. Renvoie une liste de
+    localisations réelles (aucune donnée inventée) avec leur clé de ciblage Meta
+    (`key`), leur région et leur pays — directement utilisables dans le targeting
+    d'un ad set (`geo_locations.cities` avec un rayon en km).
+
+    `location_types` ∈ {"city", "region", "country", "zip", …}. Défaut : ["city"].
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    types = location_types or ["city"]
+    try:
+        resp = requests.get(
+            f"{meta_pages.GRAPH}/search",
+            params={
+                "type": "adgeolocation",
+                "location_types": json.dumps(types),
+                "q": q,
+                "limit": limit,
+                "access_token": access_token,
+            },
+            timeout=meta_pages.TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Échec de la recherche de localisation Meta : {exc}") from exc
+    out: list[dict[str, Any]] = []
+    for row in data.get("data", []):
+        out.append({
+            "key": row.get("key"),
+            "name": row.get("name"),
+            "type": row.get("type"),
+            "region": row.get("region"),
+            "region_id": row.get("region_id"),
+            "country_code": row.get("country_code"),
+            "country_name": row.get("country_name"),
+            # `supports_region`/`supports_city` indiquent si un rayon est applicable.
+            "supports_region": row.get("supports_region"),
+        })
+    return out
 
 
 # ─── Read-only helpers used by HTTP endpoints (not langchain tools) ──────────
@@ -1259,6 +1346,128 @@ def get_account_audience_reach(
         )
         if rows:
             reach_total = _safe_int(rows[0].get("reach"))
+    except FacebookRequestError:
+        pass
+
+    return {
+        "reach_total": reach_total,
+        "age_breakdown": age,
+        "gender_breakdown": gender,
+        "demographics": demographics,
+        "placements": placements,
+        "geo_breakdown": geo_breakdown,
+    }
+
+
+def audience_reach_live(
+    access_token: str,
+    ad_account_id: str,
+    *,
+    campaign_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    days: int = 30,
+    all_time: bool = False,
+) -> dict[str, Any]:
+    """Audience touchée, en LIVE depuis Meta, filtrable par campagne ET/OU
+    plateforme (Facebook/Instagram). Même shape que get_account_audience_reach.
+
+    Utilisé quand l'utilisateur sélectionne une campagne précise (ou une
+    plateforme) sur la page Audiences — cas hors cache, chargé à la demande.
+    Sans campaign_id ni platform, préférer la version cache (dashboard.get_audience_reach).
+    """
+    _init_api(access_token)
+    entity: Any = Campaign(campaign_id) if campaign_id else AdAccount(ad_account_id)
+    base: dict[str, Any] = {"date_preset": "maximum"} if all_time else {"time_range": _exact_windows(days)[0]}
+    if not campaign_id:
+        base["level"] = "account"
+    plat = (platform or "").lower() or None
+
+    def _fetch(breakdowns: str, fields: list[str]) -> list[dict]:
+        params = dict(base)
+        bd = breakdowns
+        if plat and "publisher_platform" not in (breakdowns or "").split(","):
+            bd = f"{breakdowns},publisher_platform" if breakdowns else "publisher_platform"
+        if bd:
+            params["breakdowns"] = bd
+        out: list[dict] = []
+        try:
+            for r in entity.get_insights(fields=fields, params=params):
+                if plat and (r.get("publisher_platform") or "").lower() != plat:
+                    continue
+                out.append(r)
+        except FacebookRequestError:
+            pass
+        return out
+
+    def _share(breakdown: str, key: str) -> list[dict[str, Any]]:
+        rows = _fetch(breakdown, ["impressions"])
+        total = sum(_safe_int(r.get("impressions")) for r in rows) or 1
+        agg: dict[str, int] = {}
+        for r in rows:
+            agg[r.get(key) or "?"] = agg.get(r.get(key) or "?", 0) + _safe_int(r.get("impressions"))
+        return [{"name": k, "value": round(v * 100 / total, 1)} for k, v in agg.items()]
+
+    age = _share("age", "age")
+    gender = _share("gender", "gender")
+
+    # Démographie âge × genre (impressions brutes) pour le GroupedBar.
+    demographics: list[dict[str, Any]] = []
+    agg2: dict[str, dict[str, int]] = {}
+    for r in _fetch("age,gender", ["impressions"]):
+        a = r.get("age") or "?"
+        bucket = agg2.setdefault(a, {"male": 0, "female": 0})
+        imp = _safe_int(r.get("impressions"))
+        if r.get("gender") == "male":
+            bucket["male"] += imp
+        elif r.get("gender") == "female":
+            bucket["female"] += imp
+    for a in sorted(agg2.keys()):
+        demographics.append({"age": a, "male": agg2[a]["male"], "female": agg2[a]["female"]})
+
+    # Placements = split par plateforme : TOUJOURS calculé sans filtre plateforme
+    # (sinon ce serait trivialement 100 % de la plateforme choisie).
+    placements: list[dict[str, Any]] = []
+    try:
+        prows = list(entity.get_insights(
+            fields=["impressions"],
+            params={**base, "breakdowns": "publisher_platform"},
+        ))
+        ptotal = sum(_safe_int(r.get("impressions")) for r in prows) or 1
+        for r in prows:
+            imp = _safe_int(r.get("impressions"))
+            name = (r.get("publisher_platform") or "?").replace("_", " ").title()
+            placements.append({"name": name, "value": round(imp * 100 / ptotal, 1)})
+    except FacebookRequestError:
+        pass
+
+    # Pays (agrégés par code, ISO alpha-2 pour la carte).
+    geo_agg: dict[str, dict[str, float]] = {}
+    for r in _fetch("country", ["impressions", "clicks", "spend"]):
+        code = r.get("country") or "?"
+        g = geo_agg.setdefault(code, {"spend": 0.0, "impressions": 0, "clicks": 0})
+        g["spend"] += _safe_float(r.get("spend"))
+        g["impressions"] += _safe_int(r.get("impressions"))
+        g["clicks"] += _safe_int(r.get("clicks"))
+    geo_breakdown = [
+        {
+            "code": code, "spend": round(g["spend"], 2),
+            "impressions": int(g["impressions"]), "clicks": int(g["clicks"]),
+            "ctr": round(g["clicks"] / g["impressions"] * 100, 2) if g["impressions"] else 0.0,
+        }
+        for code, g in geo_agg.items()
+    ]
+
+    # Total personnes touchées sur la fenêtre.
+    reach_total = 0
+    try:
+        if plat:
+            for r in entity.get_insights(fields=["reach"], params={**base, "breakdowns": "publisher_platform"}):
+                if (r.get("publisher_platform") or "").lower() == plat:
+                    reach_total += _safe_int(r.get("reach"))
+        else:
+            rows = list(entity.get_insights(fields=["reach"], params=base))
+            if rows:
+                reach_total = _safe_int(rows[0].get("reach"))
     except FacebookRequestError:
         pass
 

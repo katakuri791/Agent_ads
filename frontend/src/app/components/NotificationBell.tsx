@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { AlertTriangle, Bell, CheckCheck, KeyRound, XCircle } from "lucide-react";
 import { useNotifications, useNotificationMutations } from "../hooks/useNotifications";
 import type { AppNotification } from "../lib/api";
@@ -27,6 +27,7 @@ export function NotificationBell({ onGoToSettings }: { onGoToSettings?: () => vo
   const { data } = useNotifications();
   const { markRead, markAllRead } = useNotificationMutations();
   const [open, setOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   const items = data?.items || [];
@@ -42,12 +43,17 @@ export function NotificationBell({ onGoToSettings }: { onGoToSettings?: () => vo
     return () => document.removeEventListener("mousedown", onClick);
   }, [open]);
 
+  // Clic sur une notif : marque comme lue ET agrandit/replie le message (pour
+  // qu'il soit lisible en entier). Le lien « Mettre à jour le token » reste une
+  // action distincte (voir plus bas) qui, elle, navigue vers les Paramètres.
   const onItemClick = (n: AppNotification) => {
     if (!n.read) markRead.mutate(n.id);
-    if (n.type === "token_expired" && onGoToSettings) {
-      setOpen(false);
-      onGoToSettings();
-    }
+    setExpandedId((id) => (id === n.id ? null : n.id));
+  };
+
+  const goToToken = (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    if (onGoToSettings) { setOpen(false); onGoToSettings(); }
   };
 
   return (
@@ -80,26 +86,36 @@ export function NotificationBell({ onGoToSettings }: { onGoToSettings?: () => vo
           {items.length === 0 ? (
             <div style={{ padding: 28, textAlign: "center", color: "var(--tx-dim)", fontSize: 13 }}>Aucune notification.</div>
           ) : (
-            items.map((n) => (
+            items.map((n) => {
+              const expanded = expandedId === n.id;
+              return (
               <button
                 key={n.id}
                 onClick={() => onItemClick(n)}
+                title={expanded ? "Réduire" : "Cliquer pour agrandir"}
                 style={{ width: "100%", textAlign: "left", display: "flex", gap: 10, padding: "11px 14px", border: "none", borderBottom: "1px solid var(--bd)", cursor: "pointer", background: n.read ? "transparent" : "color-mix(in srgb, var(--accent) 6%, transparent)" }}
               >
                 <span style={{ marginTop: 1, flexShrink: 0 }}>{iconFor(n.type)}</span>
                 <span style={{ minWidth: 0, flex: 1 }}>
-                  <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--tx)", marginBottom: 2 }}>{n.title}</span>
-                  {n.body && <span style={{ display: "block", fontSize: 12, color: "var(--tx-3)", lineHeight: 1.4, marginBottom: 4 }}>{n.body}</span>}
+                  <span style={{ display: "block", fontSize: expanded ? 14 : 13, fontWeight: 600, color: "var(--tx)", marginBottom: 3, whiteSpace: expanded ? "normal" : "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{n.title}</span>
+                  {n.body && (
+                    <span style={{
+                      display: expanded ? "block" : "-webkit-box", fontSize: expanded ? 13 : 12, color: "var(--tx-3)",
+                      lineHeight: 1.5, marginBottom: 4, whiteSpace: "pre-line", wordBreak: "break-word",
+                      ...(expanded ? {} : { WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }),
+                    }}>{n.body}</span>
+                  )}
                   <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontSize: 11, color: "var(--tx-dim)" }}>{relativeTime(n.created_at)}</span>
                     {n.type === "token_expired" && (
-                      <span style={{ fontSize: 11, color: "#F43F5E", fontWeight: 600 }}>Mettre à jour le token →</span>
+                      <span onClick={goToToken} style={{ fontSize: 11, color: "#F43F5E", fontWeight: 600, cursor: "pointer" }}>Mettre à jour le token →</span>
                     )}
                   </span>
                 </span>
                 {!n.read && <span style={{ width: 7, height: 7, borderRadius: 999, background: "var(--accent)", flexShrink: 0, marginTop: 5 }} />}
               </button>
-            ))
+              );
+            })
           )}
         </div>
       )}

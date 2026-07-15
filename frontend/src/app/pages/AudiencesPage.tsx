@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
-import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw, X } from "lucide-react";
-import type { AudienceSummary } from "../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw, Target, X } from "lucide-react";
+import type { AudienceSummary, CampaignSummary } from "../lib/api";
 import { fmtNum } from "../lib/format";
 import {
   Card, StatusBadge, MSButton, SearchBar, FilterPill, SlidePanel,
@@ -9,7 +9,47 @@ import {
 import { DonutChart, BarChart, GroupedBar } from "../components/ms/charts";
 import { WorldMap } from "../components/ms/worldmap";
 import { ConnectPrompt, ErrorBanner, ErrorState } from "../components/shared/states";
-import { useAudienceReach, useAudiences, errStatus, errMessage } from "../hooks/useMetaData";
+import { useAudienceReach, useAudiences, useCampaigns, errStatus, errMessage } from "../hooks/useMetaData";
+
+/** Sélecteur de campagne pour l'audience : « Toutes les campagnes » (vue compte)
+ *  ou une campagne précise → la démographie se recalcule en live pour celle-ci. */
+function CampaignSelect({ campaigns, value, onChange }: { campaigns: CampaignSummary[]; value: string | null; onChange: (id: string | null) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const f = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", f);
+    return () => document.removeEventListener("mousedown", f);
+  }, []);
+  const selected = campaigns.find((c) => c.id === value) || null;
+  const sorted = useMemo(() => campaigns.slice().sort((a, b) => (b.spend || 0) - (a.spend || 0)), [campaigns]);
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button onClick={() => setOpen((o) => !o)}
+        style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: 9, background: "var(--surf-2)", border: "1px solid var(--bd)", color: "var(--tx-2)", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: 12.5, maxWidth: 320 }}>
+        <Target size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: selected ? "var(--tx)" : "var(--tx-3)" }}>
+          {selected ? selected.name : "Toutes les campagnes"}
+        </span>
+        <ChevronDown size={14} style={{ flexShrink: 0, opacity: 0.6 }} />
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: 42, left: 0, width: 320, maxHeight: 360, overflow: "auto", background: "var(--surf-pop)", border: "1px solid var(--bd)", borderRadius: 10, padding: 6, zIndex: 40, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }}>
+          <button className="ms-menu-item" onClick={() => { onChange(null); setOpen(false); }}
+            style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", fontSize: 12.5, color: !value ? "var(--accent)" : "var(--tx-2)", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "IBM Plex Sans" }}>
+            Toutes les campagnes
+          </button>
+          {sorted.map((c) => (
+            <button key={c.id} className="ms-menu-item" onClick={() => { onChange(c.id); setOpen(false); }}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", fontSize: 12.5, color: value === c.id ? "var(--accent)" : "var(--tx-2)", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "IBM Plex Sans", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {c.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type AudSortKey = "name" | "type" | "size_high" | "time_created" | "time_updated" | "status";
 const AUD_COLS: Array<{ k: AudSortKey; label: string; w: string; align: "left" | "right" }> = [
@@ -79,7 +119,10 @@ const GENDER_LABELS: Record<string, string> = { male: "Hommes", female: "Femmes"
 export function AudiencesPage({ onGoToSettings }: { onGoToSettings: () => void }) {
   const [reachPeriod, setReachPeriod] = useState<"7D" | "30D" | "90D" | "All">("30D");
   const reachDays: number | "all" = reachPeriod === "7D" ? 7 : reachPeriod === "30D" ? 30 : reachPeriod === "90D" ? 90 : "all";
-  const reachQ = useAudienceReach(reachDays);
+  const [audCampaignId, setAudCampaignId] = useState<string | null>(null);
+  const campaignsQ = useCampaigns();
+  const reachCampaigns = campaignsQ.data ?? [];
+  const reachQ = useAudienceReach(reachDays, audCampaignId);
   const reach = reachQ.data ?? null;
   const reachLoading = reachQ.isFetching;
   const reachError = reachQ.isError ? errMessage(reachQ.error) : null;
@@ -120,6 +163,9 @@ export function AudiencesPage({ onGoToSettings }: { onGoToSettings: () => void }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <CampaignSelect campaigns={reachCampaigns} value={audCampaignId} onChange={setAudCampaignId} />
+      </div>
       <Card pad={20} style={{ position: "relative" }}>
         {reachLoading && reach && <LoadingOverlay messages={["Mise à jour de l'audience…", "Agrégation des données depuis Meta…"]} />}
         <SectionTitle right={
@@ -128,7 +174,7 @@ export function AudiencesPage({ onGoToSettings }: { onGoToSettings: () => void }
             <MSButton variant="outline" size="sm" icon={<RefreshCw size={14} />} onClick={() => reachQ.refetch()} disabled={reachLoading}>Rafraîchir</MSButton>
           </div>
         }>
-          Audience touchée par tes campagnes
+          {audCampaignId ? "Audience touchée par cette campagne" : "Audience touchée par tes campagnes"}
         </SectionTitle>
         {reachError && <div style={{ marginBottom: 14 }}><ErrorBanner message={reachError} onRetry={() => reachQ.refetch()} /></div>}
         {reachLoading && !reach ? (

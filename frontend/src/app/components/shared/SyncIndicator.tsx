@@ -33,12 +33,14 @@ export function SyncIndicator() {
   const label = busy
     ? "Synchronisation…"
     : isError
-      ? "Échec du dernier sync"
+      ? "Sync à réessayer"
       : `Maj ${relativeTime(s?.last_sync_at)}`;
 
   return (
     <div
-      title={isError ? s?.last_error || "Erreur de synchronisation" : "Dernière synchronisation des données Meta"}
+      title={isError
+        ? "La dernière synchronisation des données Meta n'a pas abouti. Clique sur le bouton pour relancer."
+        : "Dernière synchronisation des données Meta"}
       style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: isError ? "#F43F5E" : "var(--tx-3)" }}
     >
       {isError && <AlertTriangle size={14} />}

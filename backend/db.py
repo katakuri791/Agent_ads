@@ -405,6 +405,14 @@ def upsert_fb_breakdowns(rows: list[dict]) -> None:
         )
 
 
+def upsert_fb_platform_insights(rows: list[dict]) -> None:
+    """Insights niveau ad splittés par plateforme (Facebook / Instagram / …)."""
+    if rows:
+        _upsert_chunked(
+            "fb_insights_platform_daily", rows, "ad_account_id,ad_id,date,platform"
+        )
+
+
 def get_fb_sync_state(ad_account_id: str) -> Optional[dict]:
     res = (
         supabase_admin.table("fb_sync_state")
@@ -474,6 +482,35 @@ def rpc_fb_ad_agg(
 
 def rpc_fb_timeseries(account_id: str, start: str, end: str) -> list[dict]:
     return _rpc("fb_timeseries", {"p_account": account_id, "p_start": start, "p_end": end})
+
+
+# ── Variantes filtrées par plateforme (Facebook / Instagram) ─────────────────
+
+
+def rpc_fb_summary_platform(account_id: str, start: str, end: str, platform: str) -> dict:
+    rows = _rpc(
+        "fb_summary_platform",
+        {"p_account": account_id, "p_start": start, "p_end": end, "p_platform": platform},
+    )
+    return rows[0] if rows else {}
+
+
+def rpc_fb_campaign_agg_platform(
+    account_id: str, start: str, end: str, platform: str
+) -> list[dict]:
+    return _rpc(
+        "fb_campaign_agg_platform",
+        {"p_account": account_id, "p_start": start, "p_end": end, "p_platform": platform},
+    )
+
+
+def rpc_fb_timeseries_platform(
+    account_id: str, start: str, end: str, platform: str
+) -> list[dict]:
+    return _rpc(
+        "fb_timeseries_platform",
+        {"p_account": account_id, "p_start": start, "p_end": end, "p_platform": platform},
+    )
 
 
 def rpc_fb_breakdown(account_id: str, start: str, end: str, btype: str) -> list[dict]:
@@ -609,6 +646,19 @@ def update_fb_campaign_status(campaign_id: str, status: str) -> None:
         supabase_admin.table("fb_campaigns").update(
             {"status": status}
         ).eq("id", campaign_id).execute()
+    except Exception:
+        pass
+
+
+def update_fb_ad_status(ad_id: str, status: str) -> None:
+    """Met à jour le statut d'une ad dans le cache (fb_ads) pour que le panneau de
+    détail (onglet Ads, lu via fb_ad_agg) reflète immédiatement un activer/pause,
+    sans attendre le prochain sync. Best-effort : un échec de cache ne doit pas
+    faire échouer l'action Meta réussie."""
+    try:
+        supabase_admin.table("fb_ads").update(
+            {"status": status}
+        ).eq("id", ad_id).execute()
     except Exception:
         pass
 

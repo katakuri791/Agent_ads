@@ -18,6 +18,13 @@ function figmaAssetResolver() {
 }
 
 export default defineConfig({
+  // Port fixe : le backend n'autorise en CORS que localhost:5173. Sans strictPort,
+  // Vite glisse silencieusement vers 5174 si 5173 est pris → préflight CORS en 400.
+  // strictPort force Vite à échouer bruyamment plutôt que de dériver.
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
   plugins: [
     figmaAssetResolver(),
     // The React and Tailwind plugins are both required for Make, even if

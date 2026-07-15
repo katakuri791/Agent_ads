@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Check, ChevronRight, Film, Image as ImageIcon, ImagePlus, ListChecks, Loader2, Megaphone, Paperclip, Plus, Send, Sparkles, X,
+  AlertTriangle, Check, ChevronRight, Film, Image as ImageIcon, ImagePlus, ListChecks, Loader2, Megaphone, MapPin, Paperclip, Plus, Send, Sparkles, X,
 } from "lucide-react";
 import {
   api, ApiError, type StructuredOutput, type CampaignBriefStructured, type InsightAnswerStructured,
-  type CampaignQuestionnaireStructured, type CampaignCreatedStructured, type QuestionT,
+  type CampaignQuestionnaireStructured, type CampaignCreatedStructured, type QuestionT, type GeoLocation,
 } from "../lib/api";
 import { MSButton } from "../components/ms/primitives";
 import { useAccount } from "../providers/AccountProvider";
@@ -49,7 +49,8 @@ function CampaignBriefCard({ brief }: { brief: CampaignBriefStructured }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11.5 }}>
         <div style={{ borderRadius: 8, padding: "8px 10px", background: "var(--surf-2)" }}>
           <div style={{ color: "var(--tx-dim)", marginBottom: 2 }}>Audience</div>
-          <div style={{ color: "var(--tx-2)" }}>{brief.audience.age_min}–{brief.audience.age_max} ans · {brief.audience.countries.join(", ")}</div>
+          <div style={{ color: "var(--tx-2)" }}>{brief.audience.age_min}–{brief.audience.age_max} ans · {brief.audience.city_key && brief.audience.city_name ? `${brief.audience.city_name}${brief.audience.radius_km ? ` (${brief.audience.radius_km} km)` : ""}` : brief.audience.countries.join(", ")}</div>
+          {brief.audience.city_key && brief.audience.region_name && <div style={{ color: "var(--tx-3)", marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}><MapPin size={11} /> {brief.audience.region_name}</div>}
           {brief.audience.interests.length > 0 && <div style={{ color: "var(--tx-3)", marginTop: 4 }}>{brief.audience.interests.join(" · ")}</div>}
         </div>
         <div style={{ borderRadius: 8, padding: "8px 10px", background: "var(--surf-2)" }}>
@@ -157,7 +158,106 @@ function CampaignCreatedCard({ data, onNavigate }: { data: CampaignCreatedStruct
 const CUSTOM = "__custom__";
 
 type Media = { kind: "image" | "video"; ref: string; name: string; previewUrl: string };
-type Answer = { choice: string | string[]; custom: string; media?: Media | null; uploading?: boolean; mediaError?: string | null };
+type GeoSel = { key: string; name: string; region: string; country: string; radius: number };
+type Answer = { choice: string | string[]; custom: string; media?: Media | null; uploading?: boolean; mediaError?: string | null; geo?: GeoSel | null };
+
+// Budget quotidien conseillé selon l'objectif : notoriété/engagement coûtent peu,
+// trafic un peu plus, leads/ventes davantage (les conversions coûtent plus cher).
+// Sert à recommander une valeur dans le questionnaire — pas de chiffre inventé côté
+// campagne, c'est un simple guide affiché à l'utilisateur.
+const BUDGET_RECO: Record<string, { amount: number; note: string }> = {
+  OUTCOME_AWARENESS: { amount: 8, note: "La notoriété (portée/impressions) est peu coûteuse : un petit budget suffit pour démarrer." },
+  OUTCOME_ENGAGEMENT: { amount: 8, note: "L'engagement (likes, commentaires) revient peu cher : commence modestement." },
+  OUTCOME_TRAFFIC: { amount: 15, note: "Pour envoyer du trafic qualifié vers ton site, un budget moyen aide à sortir de la phase d'apprentissage." },
+  OUTCOME_LEADS: { amount: 25, note: "La génération de leads coûte plus cher par résultat : prévois un budget suffisant pour collecter des contacts." },
+  OUTCOME_SALES: { amount: 35, note: "Les conversions/ventes sont les plus coûteuses : un budget plus élevé accélère l'optimisation de Meta." },
+};
+
+// Sélecteur de ville Meta réelle → région (auto) → rayon en km. Aucune ville
+// inventée : l'autocomplétion interroge l'API Meta (search_geo_locations).
+function GeoPicker({ value, accountId, locked, placeholder, onChange }: {
+  value: GeoSel | null;
+  accountId: string | null;
+  locked: boolean;
+  placeholder?: string | null;
+  onChange: (g: GeoSel | null) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<GeoLocation[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Recherche debounced (300 ms) — évite d'appeler Meta à chaque frappe.
+  useEffect(() => {
+    const q = query.trim();
+    if (value || q.length < 2) { setResults([]); return; }
+    setLoading(true); setError(null);
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.geoSearch(q, "city", accountId);
+        setResults(res); setOpen(true);
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Recherche indisponible.");
+        setResults([]);
+      } finally { setLoading(false); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query, accountId, value]);
+
+  const select = (g: GeoLocation) => {
+    onChange({ key: g.key, name: g.name, region: g.region || "", country: g.country_name || g.country_code || "", radius: 25 });
+    setQuery(""); setResults([]); setOpen(false);
+  };
+
+  if (value) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 10, background: "var(--surf-2)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <span style={{ color: "var(--accent)", display: "inline-flex", marginTop: 1 }}><MapPin size={16} /></span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13.5, color: "var(--tx)", fontWeight: 500 }}>{value.name}</div>
+            <div style={{ fontSize: 11.5, color: "var(--tx-3)", marginTop: 1 }}>{[value.region, value.country].filter(Boolean).join(" · ")}</div>
+          </div>
+          {!locked && <button onClick={() => onChange(null)} style={{ background: "none", border: "none", color: "var(--tx-dim)", cursor: "pointer", padding: 4 }}><X size={15} /></button>}
+        </div>
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: "var(--tx-3)", marginBottom: 4 }}>
+            <span>Rayon autour de la ville</span>
+            <span style={{ fontFamily: "JetBrains Mono", color: "var(--accent)", fontWeight: 600 }}>{value.radius} km</span>
+          </div>
+          <input type="range" min={1} max={80} step={1} value={value.radius} disabled={locked}
+            onChange={(e) => onChange({ ...value, radius: Number(e.target.value) })}
+            style={{ width: "100%", accentColor: "var(--accent)", cursor: locked ? "default" : "pointer" }} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input disabled={locked} value={query} onChange={(e) => setQuery(e.target.value)} onFocus={() => results.length && setOpen(true)}
+        placeholder={placeholder || "Cherche une ville…"}
+        style={{ width: "100%", background: "var(--surf-2)", border: "1px solid var(--bd)", borderRadius: 9, padding: "9px 11px", color: "var(--tx)", fontSize: 13, outline: "none", fontFamily: "IBM Plex Sans" }} />
+      {loading && <span style={{ position: "absolute", right: 10, top: 9, color: "var(--tx-dim)" }}><Loader2 size={15} className="animate-spin" /></span>}
+      {error && <div style={{ fontSize: 11.5, color: "#FCA5A5", marginTop: 6 }}>{error}</div>}
+      {open && results.length > 0 && (
+        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20, maxHeight: 220, overflow: "auto", background: "var(--surf-pop)", border: "1px solid var(--bd)", borderRadius: 10, boxShadow: "0 14px 40px rgba(0,0,0,.4)", padding: 4 }}>
+          {results.map((g) => (
+            <button key={g.key} onClick={() => select(g)} className="ms-menu-item"
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "8px 10px", background: "transparent", border: "none", borderRadius: 7, cursor: "pointer", color: "var(--tx-2)", fontFamily: "IBM Plex Sans" }}>
+              <span style={{ color: "var(--tx-dim)", display: "inline-flex", flexShrink: 0 }}><MapPin size={13} /></span>
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 13, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</span>
+                <span style={{ display: "block", fontSize: 11, color: "var(--tx-dim)" }}>{[g.region, g.country_name].filter(Boolean).join(" · ")}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function QuestionnaireCard({ q, locked, accountId, onSubmit }: {
   q: CampaignQuestionnaireStructured;
@@ -221,8 +321,12 @@ function QuestionnaireCard({ q, locked, accountId, onSubmit }: {
   }, []);
 
   // Réponse finale (label lisible) d'une question — gère « Autre » et champ libre.
+  const setGeo = (qid: string, geo: GeoSel | null) =>
+    setAnswers((a) => ({ ...a, [qid]: { ...a[qid], geo } }));
+
   const resolved = (qq: QuestionT): string => {
     const a = answers[qq.id];
+    if (qq.type === "geo") return a.geo ? `${a.geo.name}${a.geo.region ? ` (${a.geo.region})` : ""} · ${a.geo.radius} km` : "";
     if (qq.type === "media") return a.media ? (a.media.kind === "video" ? "vidéo jointe" : "photo jointe") : "";
     if (qq.type === "text") return a.custom.trim();
     if (qq.type === "multi") {
@@ -247,6 +351,8 @@ function QuestionnaireCard({ q, locked, accountId, onSubmit }: {
       if (qq.type === "multi" && (a.choice as string[]).length) code = ` [${(a.choice as string[]).join(", ")}]`;
       // Le visuel transporte sa référence technique pour que l'agent la réutilise.
       if (qq.type === "media" && a.media) code = a.media.kind === "video" ? ` [video_id=${a.media.ref}]` : ` [image_hash=${a.media.ref}]`;
+      // Le ciblage géo transporte la clé de ville Meta + le rayon pour l'agent.
+      if (qq.type === "geo" && a.geo) code = ` [geo_city=${a.geo.key};radius=${a.geo.radius};name=${a.geo.name};region=${a.geo.region}]`;
       return `- ${qq.label} ${val || "(non précisé)"}${code}`;
     });
     onSubmit("[Réponses au questionnaire de campagne]\n" + lines.join("\n"));
@@ -271,11 +377,29 @@ function QuestionnaireCard({ q, locked, accountId, onSubmit }: {
       {q.questions.map((qq) => {
         const a = answers[qq.id];
         const customSelected = qq.type === "single" && a.choice === CUSTOM;
+        // Recommandation de budget : basée sur l'objectif déjà choisi dans ce même
+        // questionnaire. On met en avant l'option la plus proche du budget conseillé.
+        const objChoice = typeof answers["objective"]?.choice === "string" ? (answers["objective"].choice as string) : "";
+        const reco = qq.id === "daily_budget" ? BUDGET_RECO[objChoice] : undefined;
+        let recoOptValue = "";
+        if (reco) {
+          const nums = qq.options.map((o) => Number(o.value)).filter((n) => !isNaN(n));
+          if (nums.length) recoOptValue = String(nums.reduce((p, c) => (Math.abs(c - reco.amount) < Math.abs(p - reco.amount) ? c : p)));
+        }
         return (
           <div key={qq.id} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ fontSize: 13.5, color: "var(--tx)", fontWeight: 500 }}>{qq.label}{qq.required && <span style={{ color: "var(--accent)" }}> *</span>}</div>
 
-            {qq.type === "media" ? (
+            {reco && (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 11px", borderRadius: 9, background: "color-mix(in srgb, var(--accent) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)", fontSize: 12, color: "var(--tx-2)", lineHeight: 1.45 }}>
+                <Sparkles size={13} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />
+                <span>Recommandé : <b style={{ color: "var(--accent)" }}>≈ {reco.amount} € / jour</b> pour cet objectif. {reco.note}</span>
+              </div>
+            )}
+
+            {qq.type === "geo" ? (
+              <GeoPicker value={a.geo ?? null} accountId={accountId} locked={locked} placeholder={qq.placeholder} onChange={(g) => setGeo(qq.id, g)} />
+            ) : qq.type === "media" ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {a.media ? (
                   <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 10, background: "var(--surf-2)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)" }}>
@@ -307,6 +431,7 @@ function QuestionnaireCard({ q, locked, accountId, onSubmit }: {
                     <button key={o.value} disabled={locked} onClick={() => qq.type === "multi" ? toggleMulti(qq.id, o.value) : setChoice(qq.id, o.value)} style={optBtn(selected)}>
                       <span style={{ width: 18, height: 18, flexShrink: 0, borderRadius: qq.type === "multi" ? 5 : 999, border: "1.5px solid " + (selected ? "var(--accent)" : "#3A3F4A"), background: selected ? "var(--accent)" : "transparent", display: "inline-flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>{selected && <Check size={12} />}</span>
                       <span style={{ flex: 1 }}>{o.label}{o.hint && <span style={{ display: "block", fontSize: 11, color: "var(--tx-dim)", marginTop: 1 }}>{o.hint}</span>}</span>
+                      {recoOptValue && o.value === recoOptValue && <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 600, color: "var(--accent)", background: "color-mix(in srgb, var(--accent) 13%, transparent)", borderRadius: 999, padding: "2px 8px" }}>Recommandé</span>}
                     </button>
                   );
                 })}

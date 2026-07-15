@@ -121,6 +121,13 @@ class AudienceSpec(BaseModel):
     countries: list[str] = Field(default_factory=lambda: ["MA"])
     interests: list[str] = Field(default_factory=list)
     genders: Optional[str] = None  # "all" | "men" | "women"
+    # Ciblage géographique fin (optionnel) : une ville Meta (clé adgeolocation) +
+    # sa région + un rayon en km autour d'elle. Quand `city_key` est présent, le
+    # ciblage se fait par ville/rayon plutôt que par pays entier.
+    city_key: Optional[str] = None
+    city_name: Optional[str] = None
+    region_name: Optional[str] = None
+    radius_km: Optional[int] = None
 
 
 class AdCopy(BaseModel):
@@ -169,8 +176,9 @@ class Question(BaseModel):
     id: str
     label: str
     # single = un seul choix ; multi = plusieurs ; text = champ libre ;
-    # media = upload d'une photo ou d'une vidéo.
-    type: Literal["single", "multi", "text", "media"] = "single"
+    # media = upload d'une photo ou d'une vidéo ; geo = sélecteur ville + région
+    # + rayon (km) basé sur les vraies villes Meta.
+    type: Literal["single", "multi", "text", "media", "geo"] = "single"
     options: list[QuestionOption] = Field(default_factory=list)
     # allow_custom = afficher un champ « Autre / préciser » sous le QCM quand
     # l'utilisateur ne trouve pas son choix dans la liste.
@@ -272,6 +280,41 @@ class CampaignSummary(BaseModel):
     metric_name: Optional[str] = None
     metric_value: Optional[float] = None
     is_roas: Optional[bool] = None
+    # ── Métriques étendues (sélecteur de colonnes des campagnes) ──────────────
+    # Toutes optionnelles avec défaut 0 → l'ancien frontend ignore ce qu'il ne
+    # connaît pas, et une campagne sans vidéo renvoie simplement des 0.
+    reach: int = 0
+    frequency: float = 0.0
+    cpm: float = 0.0
+    cpp: float = 0.0
+    purchases: int = 0
+    leads: int = 0
+    cost_per_purchase: float = 0.0
+    cost_per_lead: float = 0.0
+    add_to_cart: int = 0
+    initiate_checkout: int = 0
+    landing_page_views: int = 0
+    link_clicks: int = 0
+    inline_link_clicks: int = 0
+    unique_clicks: int = 0
+    outbound_clicks: int = 0
+    link_ctr: float = 0.0
+    post_engagement: int = 0
+    post_reactions: int = 0
+    post_comments: int = 0
+    post_shares: int = 0
+    post_saves: int = 0
+    # Vidéo
+    video_3s: int = 0
+    thruplays: int = 0
+    video_p25: int = 0
+    video_p50: int = 0
+    video_p75: int = 0
+    video_p100: int = 0
+    video_plays: int = 0
+    cost_per_thruplay: float = 0.0
+    hook_rate: float = 0.0
+    hold_rate: float = 0.0
 
 
 class CampaignStatusUpdate(BaseModel):
@@ -316,6 +359,10 @@ class PagePost(BaseModel):
     created_time: Optional[str] = None
     permalink_url: Optional[str] = None
     full_picture: Optional[str] = None
+    # Type de média réel du post (photo|video|link|album…) et, pour une vidéo,
+    # l'URL source (mp4) jouable directement dans un lecteur <video>.
+    media_type: Optional[str] = None
+    media_url: Optional[str] = None
     reactions: int = 0
     comments: int = 0
     shares: int = 0
@@ -384,6 +431,75 @@ class AudienceReachResponse(BaseModel):
     demographics: list[dict[str, Any]] = []
     placements: list[dict[str, Any]] = []
     geo_breakdown: list[dict[str, Any]] = []
+
+
+class IgProfile(BaseModel):
+    id: str
+    username: Optional[str] = None
+    name: Optional[str] = None
+    followers_count: int = 0
+    follows_count: int = 0
+    media_count: int = 0
+    profile_picture_url: Optional[str] = None
+    biography: Optional[str] = None
+    website: Optional[str] = None
+
+
+class IgPost(BaseModel):
+    id: str
+    caption: Optional[str] = None
+    media_type: Optional[str] = None
+    media_product_type: Optional[str] = None
+    media_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    permalink: Optional[str] = None
+    timestamp: Optional[str] = None
+    like_count: int = 0
+    comments_count: int = 0
+    # « Combien de gens ont vu » = reach (comptes uniques). None si indisponible.
+    reach: Optional[int] = None
+    impressions: Optional[int] = None
+
+
+class InstagramResponse(BaseModel):
+    profile: Optional[IgProfile] = None
+    posts: list[IgPost] = []
+    # Raison Meta réelle si Instagram est indisponible (aucun compte IG lié, scope
+    # manquant…). None si les données sont bien chargées.
+    blocked_reason: Optional[str] = None
+
+
+class AccountUser(BaseModel):
+    id: str
+    name: str
+    role: str = "—"           # Admin | Advertiser | Analyst | Draft | —
+    tasks: list[str] = []     # permissions Meta brutes (MANAGE, ADVERTISE…)
+
+
+class AccountUsersResponse(BaseModel):
+    users: list[AccountUser] = []
+    # Raison Meta réelle si l'accès est refusé (scope business_management manquant…).
+    blocked_reason: Optional[str] = None
+
+
+class BillingMonth(BaseModel):
+    month: str                # YYYY-MM
+    spend: float = 0.0
+    impressions: int = 0
+    clicks: int = 0
+
+
+class BillingResponse(BaseModel):
+    name: Optional[str] = None
+    currency: Optional[str] = None
+    account_status: Optional[str] = None
+    amount_spent: Optional[float] = None
+    balance: Optional[float] = None
+    spend_cap: Optional[float] = None
+    payment_type: Optional[str] = None       # ex. « Credit Card », « Paypal »
+    payment_display: Optional[str] = None     # ex. « Visa ****1234 »
+    card_count: int = 0                       # nb de moyens de paiement (source active Meta)
+    history: list[BillingMonth] = []          # dépense mensuelle (vraies données)
 
 
 class SearchResultItem(BaseModel):

@@ -108,6 +108,14 @@ def build_campaign_questionnaire() -> CampaignQuestionnaire:
                 placeholder="Codes pays ISO-2, ex : ES, DE",
             ),
             Question(
+                id="geo",
+                label="Cibler une ville précise ? (optionnel)",
+                type="geo",
+                allow_custom=False,
+                required=False,
+                placeholder="Cherche une ville, choisis sa région, puis le rayon en km",
+            ),
+            Question(
                 id="age",
                 label="Quelle tranche d'âge ?",
                 type="single",
@@ -206,6 +214,16 @@ Tu aides l'utilisateur à créer et gérer ses campagnes publicitaires et sa Pag
   campagne pertinent et rédige le headline / primary_text à partir de ce que l'utilisateur
   a décrit. Cela affiche une carte de prévisualisation à valider ; demande ensuite
   confirmation avant la création réelle.
+- Ciblage géographique par ville : si une réponse contient un code
+  `[geo_city=<clé>;radius=<km>;name=<ville>;region=<région>]`, passe `city_key=<clé>`,
+  `radius_km=<km>`, `city_name=<ville>` et `region_name=<région>` à `emit_campaign_brief`
+  PUIS à `create_full_campaign` (city_key + radius_km). Dans ce cas le ciblage se fait
+  autour de la ville (rayon en km), pas sur le pays entier. NE fabrique JAMAIS une clé de
+  ville : n'utilise que celle fournie par le code.
+- Recommandation de budget : adapte le budget quotidien conseillé à l'objectif —
+  notoriété/engagement demandent peu (≈5–10 par jour), trafic un peu plus (≈10–20),
+  leads/ventes davantage (≈20–50) car les conversions coûtent plus cher. Respecte
+  toutefois le budget explicitement choisi par l'utilisateur dans le questionnaire.
 - Si l'utilisateur fournit DÉJÀ tous les détails dans un message libre (sans passer par le
   QCM), tu peux appeler directement `emit_campaign_brief` sans afficher le QCM.
 - Quand l'utilisateur demande une ANALYSE ou des STATISTIQUES (performances, KPIs,
@@ -277,6 +295,10 @@ def _build_structured_tools(persist: dict[str, Any]) -> list:
         video_id: Optional[str] = None,
         estimated_reach: Optional[str] = None,
         notes: Optional[str] = None,
+        city_key: Optional[str] = None,
+        city_name: Optional[str] = None,
+        region_name: Optional[str] = None,
+        radius_km: Optional[int] = None,
     ) -> str:
         """Émet une carte structurée de PRÉVISUALISATION de campagne publicitaire.
 
@@ -301,6 +323,11 @@ def _build_structured_tools(persist: dict[str, Any]) -> list:
             video_id: identifiant de vidéo déjà uploadée (si l'utilisateur a joint une vidéo)
             estimated_reach: estimation de la portée (ex: "15K–35K personnes/jour")
             notes: notes additionnelles à montrer à l'utilisateur
+            city_key: clé Meta d'une ville ciblée (issue du questionnaire, code
+                [geo_city=...]) — ciblage par ville + rayon plutôt que par pays.
+            city_name: nom lisible de la ville (ex: "Casablanca")
+            region_name: région de la ville (ex: "Grand Casablanca")
+            radius_km: rayon en km autour de la ville (1–80)
         """
         try:
             brief = CampaignBrief(
@@ -313,6 +340,10 @@ def _build_structured_tools(persist: dict[str, Any]) -> list:
                     countries=countries or ["MA"],
                     interests=interests or [],
                     genders=genders,
+                    city_key=city_key,
+                    city_name=city_name,
+                    region_name=region_name,
+                    radius_km=radius_km,
                 ),
                 ad_copy=AdCopy(
                     headline=headline,

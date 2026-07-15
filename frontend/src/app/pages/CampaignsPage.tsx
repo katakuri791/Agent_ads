@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import {
-  ChevronDown, ChevronLeft, ChevronRight, Download, Plus, X,
+  ChevronDown, ChevronLeft, ChevronRight, Download, Plus, SlidersHorizontal, X,
 } from "lucide-react";
 // ChevronRight sert d'indice « cliquer pour voir le détail » au survol des lignes.
 import { api, ApiError, type CampaignDetailSection, type CampaignSummary, type DateRange } from "../lib/api";
@@ -17,24 +17,92 @@ import { useFilters } from "../providers/FiltersProvider";
 import { useToast } from "../providers/ToastProvider";
 import { useAccount } from "../providers/AccountProvider";
 
-interface CampCol { k: keyof CampaignSummary | "name"; label: string; w: string; align: "left" | "right"; num?: boolean; money?: boolean; cents?: boolean; pct?: boolean; roasFmt?: boolean; roiFmt?: boolean; }
-const CAMP_COLS: CampCol[] = [
-  { k: "name", label: "Campaign Name", w: "2fr", align: "left" },
-  { k: "status", label: "Status", w: "0.9fr", align: "left" },
-  { k: "objective", label: "Objective", w: "1.1fr", align: "left" },
-  { k: "daily_budget", label: "Budget", w: "0.9fr", align: "right", num: true, money: true },
-  { k: "spend", label: "Spend", w: "0.9fr", align: "right", num: true, money: true },
-  { k: "revenue", label: "Revenue", w: "0.9fr", align: "right", num: true, money: true },
-  { k: "roas", label: "ROAS", w: "0.7fr", align: "right", num: true, roasFmt: true },
-  { k: "roi", label: "ROI", w: "0.7fr", align: "right", num: true, roiFmt: true },
-  { k: "impressions", label: "Impr.", w: "0.8fr", align: "right", num: true },
-  { k: "clicks", label: "Clicks", w: "0.8fr", align: "right", num: true },
-  { k: "ctr", label: "CTR", w: "0.6fr", align: "right", num: true, pct: true },
-  { k: "conversions", label: "Conv.", w: "0.7fr", align: "right", num: true },
+interface CampCol {
+  k: keyof CampaignSummary | "name";
+  label: string;
+  wpx: number;                 // largeur en px (grille scrollable horizontalement)
+  align: "left" | "right";
+  group: string;               // groupe dans le sélecteur de métriques
+  num?: boolean;               // police mono + fmtNum par défaut
+  money?: boolean; cents?: boolean; pct?: boolean; dec2?: boolean;
+  roasFmt?: boolean; roiFmt?: boolean;
+}
+
+// Catalogue COMPLET des métriques Meta Ads disponibles. L'utilisateur choisit
+// lesquelles afficher (sélecteur de colonnes) ; le sous-ensemble est persisté en
+// localStorage. La colonne « name » est épinglée (toujours visible, en tête).
+const ALL_CAMP_COLS: CampCol[] = [
+  // Général
+  { k: "name", label: "Campaign Name", wpx: 240, align: "left", group: "Général" },
+  { k: "status", label: "Status", wpx: 104, align: "left", group: "Général" },
+  { k: "objective", label: "Objective", wpx: 150, align: "left", group: "Général" },
+  { k: "daily_budget", label: "Budget", wpx: 104, align: "right", group: "Général", num: true, cents: true },
+  // Dépense & coût
+  { k: "spend", label: "Spend", wpx: 104, align: "right", group: "Dépense & coût", num: true, money: true },
+  { k: "cpm", label: "CPM", wpx: 92, align: "right", group: "Dépense & coût", num: true, money: true },
+  { k: "cpc", label: "CPC", wpx: 92, align: "right", group: "Dépense & coût", num: true, cents: true },
+  { k: "cpp", label: "CPP (Reach 1k)", wpx: 120, align: "right", group: "Dépense & coût", num: true, money: true },
+  { k: "cost_per_purchase", label: "Cost / Purchase", wpx: 128, align: "right", group: "Dépense & coût", num: true, money: true },
+  { k: "cost_per_lead", label: "Cost / Lead", wpx: 108, align: "right", group: "Dépense & coût", num: true, money: true },
+  { k: "cost_per_thruplay", label: "Cost / ThruPlay", wpx: 128, align: "right", group: "Dépense & coût", num: true, cents: true },
+  // Résultats
+  { k: "revenue", label: "Revenue", wpx: 104, align: "right", group: "Résultats", num: true, money: true },
+  { k: "roas", label: "ROAS", wpx: 84, align: "right", group: "Résultats", num: true, roasFmt: true },
+  { k: "roi", label: "ROI", wpx: 84, align: "right", group: "Résultats", num: true, roiFmt: true },
+  { k: "conversions", label: "Conv.", wpx: 84, align: "right", group: "Résultats", num: true },
+  { k: "purchases", label: "Purchases", wpx: 104, align: "right", group: "Résultats", num: true },
+  { k: "leads", label: "Leads", wpx: 84, align: "right", group: "Résultats", num: true },
+  { k: "add_to_cart", label: "Add to Cart", wpx: 108, align: "right", group: "Résultats", num: true },
+  { k: "initiate_checkout", label: "Checkouts", wpx: 104, align: "right", group: "Résultats", num: true },
+  { k: "landing_page_views", label: "LP Views", wpx: 100, align: "right", group: "Résultats", num: true },
+  // Portée & diffusion
+  { k: "impressions", label: "Impr.", wpx: 96, align: "right", group: "Portée & diffusion", num: true },
+  { k: "reach", label: "Reach", wpx: 96, align: "right", group: "Portée & diffusion", num: true },
+  { k: "frequency", label: "Frequency", wpx: 100, align: "right", group: "Portée & diffusion", num: true, dec2: true },
+  // Clics
+  { k: "clicks", label: "Clicks", wpx: 92, align: "right", group: "Clics", num: true },
+  { k: "inline_link_clicks", label: "Link Clicks", wpx: 108, align: "right", group: "Clics", num: true },
+  { k: "unique_clicks", label: "Unique Clicks", wpx: 120, align: "right", group: "Clics", num: true },
+  { k: "outbound_clicks", label: "Outbound Clicks", wpx: 132, align: "right", group: "Clics", num: true },
+  { k: "ctr", label: "CTR", wpx: 84, align: "right", group: "Clics", num: true, pct: true },
+  { k: "link_ctr", label: "Link CTR", wpx: 96, align: "right", group: "Clics", num: true, pct: true },
+  // Engagement
+  { k: "post_engagement", label: "Post Eng.", wpx: 104, align: "right", group: "Engagement", num: true },
+  { k: "post_reactions", label: "Reactions", wpx: 100, align: "right", group: "Engagement", num: true },
+  { k: "post_comments", label: "Comments", wpx: 100, align: "right", group: "Engagement", num: true },
+  { k: "post_shares", label: "Shares", wpx: 88, align: "right", group: "Engagement", num: true },
+  { k: "post_saves", label: "Saves", wpx: 84, align: "right", group: "Engagement", num: true },
+  // Vidéo
+  { k: "video_plays", label: "Video Plays", wpx: 110, align: "right", group: "Vidéo", num: true },
+  { k: "video_3s", label: "3-Sec Views", wpx: 110, align: "right", group: "Vidéo", num: true },
+  { k: "thruplays", label: "ThruPlays", wpx: 100, align: "right", group: "Vidéo", num: true },
+  { k: "video_p25", label: "Video 25%", wpx: 104, align: "right", group: "Vidéo", num: true },
+  { k: "video_p50", label: "Video 50%", wpx: 104, align: "right", group: "Vidéo", num: true },
+  { k: "video_p75", label: "Video 75%", wpx: 104, align: "right", group: "Vidéo", num: true },
+  { k: "video_p100", label: "Video 100%", wpx: 108, align: "right", group: "Vidéo", num: true },
+  { k: "hook_rate", label: "Hook Rate", wpx: 100, align: "right", group: "Vidéo", num: true, pct: true },
+  { k: "hold_rate", label: "Hold Rate", wpx: 100, align: "right", group: "Vidéo", num: true, pct: true },
 ];
-// Colonne « Actif » en fin de ligne : un switch d'activation + un chevron
-// « cliquer pour ouvrir » qui apparaît au survol.
-const CAMP_GRID = CAMP_COLS.map((c) => c.w).join(" ") + " 92px";
+
+// Colonnes affichées par défaut (mêmes que la version d'origine).
+const DEFAULT_COL_KEYS: Array<CampCol["k"]> = [
+  "name", "status", "objective", "daily_budget", "spend", "revenue",
+  "roas", "roi", "impressions", "clicks", "ctr", "conversions",
+];
+const COLS_STORAGE_KEY = "camp_cols_v2";
+const COL_BY_KEY: Record<string, CampCol> = Object.fromEntries(ALL_CAMP_COLS.map((c) => [c.k, c]));
+
+function loadVisibleKeys(): Array<CampCol["k"]> {
+  try {
+    const raw = localStorage.getItem(COLS_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      const valid = arr.filter((k) => COL_BY_KEY[k]) as Array<CampCol["k"]>;
+      if (valid.length) return valid.includes("name") ? valid : (["name", ...valid] as Array<CampCol["k"]>);
+    }
+  } catch { /* ignore */ }
+  return DEFAULT_COL_KEYS;
+}
 
 function DetailStat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
@@ -118,13 +186,36 @@ const TAB_TO_SECTION: Record<string, CampaignDetailSection> = {
 
 function CampaignDetail({ campaign, range, onClose }: { campaign: CampaignSummary | null; range: DateRange; onClose: () => void }) {
   const [tab, setTab] = useState("Ad Sets");
+  const toast = useToast();
+  const { selectedAccountId } = useAccount();
+  const invalidate = useInvalidateMetaData();
   // On ne charge que la section de l'onglet actif ; changer d'onglet déclenche son
   // propre fetch (et TanStack garde en cache les onglets déjà ouverts).
   const detailQ = useCampaignDetail(campaign?.id ?? null, range, TAB_TO_SECTION[tab]);
   const detail = detailQ.data ?? null;
   const loading = detailQ.isFetching;
   const error = detailQ.isError ? errMessage(detailQ.error) : null;
-  useEffect(() => { setTab("Ad Sets"); }, [campaign?.id]);
+  // Activer / mettre en pause une ad (optimiste + rollback si échec).
+  const [adStatusOverride, setAdStatusOverride] = useState<Record<string, string>>({});
+  const [togglingAdId, setTogglingAdId] = useState<string | null>(null);
+  useEffect(() => { setTab("Ad Sets"); setAdStatusOverride({}); }, [campaign?.id]);
+
+  const toggleAdStatus = async (adId: string, cur: string) => {
+    if ((cur !== "ACTIVE" && cur !== "PAUSED") || togglingAdId) return;
+    const next: "ACTIVE" | "PAUSED" = cur === "ACTIVE" ? "PAUSED" : "ACTIVE";
+    setTogglingAdId(adId);
+    setAdStatusOverride((m) => ({ ...m, [adId]: next }));
+    try {
+      await api.updateAdStatus(adId, next, selectedAccountId);
+      toast(next === "ACTIVE" ? "Ad activée" : "Ad mise en pause", { kind: "success" });
+      invalidate();
+    } catch (e) {
+      setAdStatusOverride((m) => { const n = { ...m }; delete n[adId]; return n; });
+      toast("Échec de la mise à jour", { kind: "error", msg: e instanceof ApiError ? e.message : undefined });
+    } finally {
+      setTogglingAdId(null);
+    }
+  };
 
   if (!campaign) return null;
   const c = campaign;
@@ -224,13 +315,23 @@ function CampaignDetail({ campaign, range, onClose }: { campaign: CampaignSummar
             {tab === "Ads" && (
               detail.ads.length === 0 ? empty("Aucune ad sur cette période.") :
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {detail.ads.map((a, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 14px", background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 8 }}>
+                {detail.ads.map((a, i) => {
+                  const adCur = (a.id && adStatusOverride[a.id] ? adStatusOverride[a.id] : (a.status || "ACTIVE")).toUpperCase();
+                  const adToggleable = !!a.id && (adCur === "ACTIVE" || adCur === "PAUSED");
+                  const adBusy = !!a.id && togglingAdId === a.id;
+                  return (
+                  <div key={a.id || i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 14px", background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 8 }}>
                     {a.thumbnail_url ? <img src={a.thumbnail_url} alt="" style={{ width: 44, height: 44, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} /> : <Placeholder w={44} height={44} label="IMG" />}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13.5, color: "var(--tx)", fontWeight: 500 }}>{a.name}</div>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                        <div style={{ fontSize: 13.5, color: "var(--tx)", fontWeight: 500, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</div>
+                        {/* Switch activer/pause de l'ad — désactivé si Meta ne fournit pas d'id. */}
+                        {adToggleable
+                          ? <Switch checked={adCur === "ACTIVE"} disabled={adBusy} onChange={() => toggleAdStatus(a.id!, adCur)} title={adCur === "ACTIVE" ? "Mettre l'ad en pause" : "Activer l'ad"} />
+                          : null}
+                      </div>
                       <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <StatusBadge status={(a.status || "ACTIVE").toUpperCase()} dot />
+                        <StatusBadge status={adCur} dot />
                         <span style={{ fontSize: 11, color: "var(--tx-3)", background: "var(--bd)", borderRadius: 5, padding: "1px 7px" }}>{a.format}</span>
                       </div>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8, marginTop: 10 }}>
@@ -243,7 +344,8 @@ function CampaignDetail({ campaign, range, onClose }: { campaign: CampaignSummar
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             {tab === "Demographics" && (
@@ -293,6 +395,67 @@ function ExportMenu({ onExport, disabled }: { onExport: (f: ExportFormat) => voi
   );
 }
 
+/** Sélecteur de métriques : l'utilisateur coche les colonnes à afficher, groupées
+ *  par famille (Dépense, Résultats, Clics, Vidéo…). « name » est épinglée. */
+function ColumnsMenu({ visibleKeys, onChange }: { visibleKeys: Array<CampCol["k"]>; onChange: (keys: Array<CampCol["k"]>) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const f = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", f);
+    return () => document.removeEventListener("mousedown", f);
+  }, []);
+  const visible = new Set(visibleKeys);
+  const toggle = (k: CampCol["k"]) => {
+    if (k === "name") return; // épinglée
+    // Conserve l'ordre du catalogue en reconstruisant depuis ALL_CAMP_COLS.
+    const next = new Set(visible);
+    next.has(k) ? next.delete(k) : next.add(k);
+    onChange(ALL_CAMP_COLS.filter((c) => c.k === "name" || next.has(c.k)).map((c) => c.k));
+  };
+  const groups = ALL_CAMP_COLS.reduce<Record<string, CampCol[]>>((acc, c) => {
+    (acc[c.group] = acc[c.group] || []).push(c);
+    return acc;
+  }, {});
+  const count = visibleKeys.filter((k) => k !== "name").length;
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <MSButton variant="outline" icon={<SlidersHorizontal size={15} />} onClick={() => setOpen((o) => !o)}>
+        Métriques<span style={{ marginLeft: 6, fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--accent)" }}>{count}</span>
+        <ChevronDown size={14} style={{ marginLeft: 4 }} />
+      </MSButton>
+      {open && (
+        <div style={{ position: "absolute", top: 42, right: 0, width: 320, maxHeight: 440, overflow: "auto", background: "var(--surf-pop)", border: "1px solid var(--bd)", borderRadius: 12, padding: 12, zIndex: 40, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--tx)" }}>Colonnes affichées</span>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => onChange(ALL_CAMP_COLS.map((c) => c.k))} className="ms-menu-item" style={{ fontSize: 11, color: "var(--accent)", background: "transparent", border: "none", cursor: "pointer" }}>Tout</button>
+              <button onClick={() => onChange(DEFAULT_COL_KEYS)} className="ms-menu-item" style={{ fontSize: 11, color: "var(--tx-dim)", background: "transparent", border: "none", cursor: "pointer" }}>Défaut</button>
+            </div>
+          </div>
+          {Object.entries(groups).map(([group, cols]) => (
+            <div key={group} style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", marginBottom: 5 }}>{group}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                {cols.map((c) => {
+                  const on = c.k === "name" || visible.has(c.k);
+                  return (
+                    <label key={c.k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", borderRadius: 6, cursor: c.k === "name" ? "default" : "pointer", fontSize: 12.5, color: c.k === "name" ? "var(--tx-dim)" : "var(--tx-2)", opacity: c.k === "name" ? 0.7 : 1 }}
+                      className={c.k === "name" ? undefined : "ms-menu-item"}>
+                      <input type="checkbox" checked={on} disabled={c.k === "name"} onChange={() => toggle(c.k)} style={{ accentColor: "var(--accent)", width: 14, height: 14 }} />
+                      <span>{c.label}{c.k === "name" ? " (épinglée)" : ""}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CampaignsPage({ onGoToSettings, onAskAgent }: { onGoToSettings: () => void; onAskAgent: () => void }) {
   const toast = useToast();
   const { range } = useFilters();
@@ -305,11 +468,28 @@ export function CampaignsPage({ onGoToSettings, onAskAgent }: { onGoToSettings: 
   const [hoverRow, setHoverRow] = useState<string | null>(null);
   const [statusOverride, setStatusOverride] = useState<Record<string, string>>({});
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [visibleKeys, setVisibleKeys] = useState<Array<CampCol["k"]>>(loadVisibleKeys);
   const perPage = 10;
+
+  // Persiste le choix de colonnes de l'utilisateur (survit au rechargement).
+  useEffect(() => {
+    try { localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(visibleKeys)); } catch { /* ignore */ }
+  }, [visibleKeys]);
+
+  // Colonnes visibles dans l'ordre du catalogue (« name » toujours en tête).
+  const cols = useMemo(() => {
+    const vis = new Set(visibleKeys);
+    return ALL_CAMP_COLS.filter((c) => c.k === "name" || vis.has(c.k));
+  }, [visibleKeys]);
+  // Colonne « Actif » (switch) placée EN TÊTE (à gauche), puis les colonnes métriques.
+  const CAMP_GRID = "92px " + cols.map((c) => `${c.wpx}px`).join(" ");
+  // Largeur mini du tableau → scroll horizontal quand beaucoup de colonnes.
+  const gridMinWidth = cols.reduce((s, c) => s + c.wpx, 0) + 92 + cols.length * 10 + 36;
 
   const { selectedAccountId } = useAccount();
   const invalidate = useInvalidateMetaData();
-  const campaignsQ = useCampaigns();
+  // Plus de toggle FB/IG sur cette page → on ignore le filtre plateforme (comme avant).
+  const campaignsQ = useCampaigns({ ignorePlatform: true });
   const campaigns = campaignsQ.data ?? [];
   const campaignsLoading = campaignsQ.isFetching;
 
@@ -360,6 +540,7 @@ export function CampaignsPage({ onGoToSettings, onAskAgent }: { onGoToSettings: 
     if (col.cents) return fmtCents(v);
     if (col.money) return fmtMoney(v);
     if (col.pct) return Number(v).toFixed(2) + "%";
+    if (col.dec2) return Number(v || 0).toFixed(2);
     if (col.num) return fmtNum(v);
     return String(v);
   }
@@ -374,8 +555,8 @@ export function CampaignsPage({ onGoToSettings, onAskAgent }: { onGoToSettings: 
 
   function handleExport(format: ExportFormat) {
     if (filtered.length === 0) { toast("Rien à exporter", { kind: "error", msg: "Aucune campagne pour ce filtre." }); return; }
-    const headers = CAMP_COLS.map((c) => c.label);
-    const rows = filtered.map((c) => CAMP_COLS.map((col) => fmtCell(c, col)));
+    const headers = cols.map((c) => c.label);
+    const rows = filtered.map((c) => cols.map((col) => fmtCell(c, col)));
     const suffix = range.since && range.until ? `${range.since}_${range.until}` : (range.preset || "all");
     const filename = `campaigns_${suffix}.${format === "xlsx" ? "xlsx" : format}`;
     try {
@@ -403,21 +584,24 @@ export function CampaignsPage({ onGoToSettings, onAskAgent }: { onGoToSettings: 
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <FilterPill label="Status" value={status} options={["All", "Active", "Paused", "Archived"]} onChange={(v) => { setStatus(v); setPage(1); }} />
           <FilterPill label="Objective" value={objective} options={["All", "Conversions", "Reach", "Traffic", "Awareness", "App Installs", "Lead Gen", "Engagement"]} onChange={(v) => { setObjective(v); setPage(1); }} />
+          <ColumnsMenu visibleKeys={visibleKeys} onChange={setVisibleKeys} />
           <ExportMenu onExport={handleExport} disabled={filtered.length === 0} />
           <MSButton variant="primary" icon={<Plus size={15} />} onClick={onAskAgent}>New Campaign</MSButton>
         </div>
       </div>
 
       <Card pad={0} style={{ overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+        <div style={{ minWidth: gridMinWidth }}>
         <div style={{ display: "grid", gridTemplateColumns: CAMP_GRID, gap: 10, padding: "12px 18px", borderBottom: "1px solid var(--bd)", background: "var(--surf-2)" }}>
-          {CAMP_COLS.map((col) => (
+          <span style={{ textAlign: "left", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", fontFamily: "IBM Plex Sans", fontWeight: 500 }}>Actif</span>
+          {cols.map((col) => (
             <button key={col.k} onClick={() => clickSort(col.k)} className="ms-th"
               style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 4, justifyContent: col.align === "right" ? "flex-end" : "flex-start", background: "none", border: "none", cursor: "pointer", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: sort.k === col.k ? "var(--tx-2)" : "var(--tx-dim)", fontFamily: "IBM Plex Sans", fontWeight: 500, padding: 0 }}>
-              <span>{col.label}</span>
-              <span style={{ display: "inline-flex", opacity: sort.k === col.k ? 1 : 0.35, color: sort.k === col.k ? "var(--accent)" : "var(--tx-dim)" }}>{sort.k === col.k && sort.dir === 1 ? <ChevronDown size={12} style={{ transform: "rotate(180deg)" }} /> : <ChevronDown size={12} />}</span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{col.label}</span>
+              <span style={{ display: "inline-flex", flexShrink: 0, opacity: sort.k === col.k ? 1 : 0.35, color: sort.k === col.k ? "var(--accent)" : "var(--tx-dim)" }}>{sort.k === col.k && sort.dir === 1 ? <ChevronDown size={12} style={{ transform: "rotate(180deg)" }} /> : <ChevronDown size={12} />}</span>
             </button>
           ))}
-          <span style={{ textAlign: "right", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", fontFamily: "IBM Plex Sans", fontWeight: 500 }}>Actif</span>
         </div>
         <div>
           {pageRows.length === 0
@@ -430,20 +614,23 @@ export function CampaignsPage({ onGoToSettings, onAskAgent }: { onGoToSettings: 
                 <div key={c.id || i} className="ms-trow" onClick={() => setSelected(c)}
                   onMouseEnter={() => setHoverRow(c.id)} onMouseLeave={() => setHoverRow(null)}
                   style={{ position: "relative", display: "grid", gridTemplateColumns: CAMP_GRID, gap: 10, alignItems: "center", padding: "0 18px", height: 52, borderBottom: i < pageRows.length - 1 ? "1px solid var(--bd-weak)" : "none", cursor: "pointer", transition: "background .12s" }}>
-                  {CAMP_COLS.map((col) => {
-                    if (col.k === "status") return <span key={col.k}><StatusBadge status={cur} dot /></span>;
-                    return <span key={col.k} style={{ minWidth: 0, textAlign: col.align, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: col.num ? "JetBrains Mono" : "IBM Plex Sans", fontSize: col.num ? 12.5 : 13.5, color: cellColor(c, col), fontWeight: col.k === "name" ? 500 : 400 }}>{fmtCell(c, col)}</span>;
-                  })}
-                  {/* Colonne « Actif » : indice cliquable au survol + switch ON/OFF */}
-                  <span style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
-                    <span style={{ display: "inline-flex", color: "var(--accent)", opacity: hoverRow === c.id ? 1 : 0, transition: "opacity .15s" }} title="Voir les détails"><ChevronRight size={16} /></span>
+                  {/* Colonne « Actif » (à gauche) : switch ON/OFF + indice « voir détails » au survol.
+                      stopPropagation sur le switch pour ne pas ouvrir le panneau détail au clic. */}
+                  <span style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 8 }} onClick={(e) => e.stopPropagation()}>
                     {toggleable
                       ? <Switch checked={cur === "ACTIVE"} disabled={busy} onChange={() => toggleStatus(c, cur)} title={cur === "ACTIVE" ? "Mettre en pause" : "Activer"} />
                       : <span style={{ width: 38 }} />}
+                    <span style={{ display: "inline-flex", color: "var(--accent)", opacity: hoverRow === c.id ? 1 : 0, transition: "opacity .15s" }} title="Voir les détails"><ChevronRight size={16} /></span>
                   </span>
+                  {cols.map((col) => {
+                    if (col.k === "status") return <span key={col.k}><StatusBadge status={cur} dot /></span>;
+                    return <span key={col.k} style={{ minWidth: 0, textAlign: col.align, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: col.num ? "JetBrains Mono" : "IBM Plex Sans", fontSize: col.num ? 12.5 : 13.5, color: cellColor(c, col), fontWeight: col.k === "name" ? 500 : 400 }}>{fmtCell(c, col)}</span>;
+                  })}
                 </div>
               );
             })}
+        </div>
+        </div>
         </div>
       </Card>
 
