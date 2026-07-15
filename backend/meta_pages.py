@@ -106,8 +106,12 @@ def get_page_info(page_id: str, user_token: str) -> dict[str, Any]:
     return data
 
 
+# `attachments{...}` porte le média du post : media_type (photo|video|link|album…)
+# et, pour une vidéo, l'URL source (mp4) lisible directement dans un <video>.
+_ATTACH = "attachments{media_type,type,media,target,url,subattachments}"
 _POST_FIELDS = (
     "message,created_time,permalink_url,full_picture,"
+    f"{_ATTACH},"
     "reactions.summary(total_count).limit(0),"
     "comments.summary(total_count).limit(0),"
     "shares"
@@ -116,7 +120,7 @@ _POST_FIELDS = (
 # Engagement summaries (reactions/comments) require the `pages_read_engagement`
 # permission. When a token lacks it Meta returns error (#10); we then fall back
 # to these minimal fields so the posts themselves still load (engagement at 0).
-_POST_FIELDS_MINIMAL = "message,created_time,permalink_url,full_picture"
+_POST_FIELDS_MINIMAL = f"message,created_time,permalink_url,full_picture,{_ATTACH}"
 
 
 def _fetch_posts(
@@ -148,13 +152,41 @@ def _fetch_posts(
         return data, reason
 
 
+def _parse_attachment(row: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Extrait (media_type, media_url) du premier attachment d'un post.
+
+    - media_type ∈ {photo, video, link, album, status, …} (valeur Meta réelle,
+      normalisée en minuscules) ou None si le post n'a pas de média.
+    - media_url : pour une vidéo → l'URL source (mp4) jouable dans un <video> ;
+      pour une photo → l'image pleine résolution. None si indisponible.
+    On ne fabrique aucune donnée : si Meta ne renvoie pas la source, media_url reste
+    None et le frontend retombe sur full_picture / le permalien."""
+    atts = (row.get("attachments") or {}).get("data") or []
+    if not atts:
+        return None, None
+    att = atts[0]
+    raw_type = (att.get("media_type") or att.get("type") or "").lower()
+    media = att.get("media") or {}
+    media_url: Optional[str] = None
+    if raw_type == "video":
+        media_url = media.get("source") or None
+    if not media_url:
+        img = media.get("image") if isinstance(media.get("image"), dict) else None
+        if img:
+            media_url = img.get("src")
+    return (raw_type or None), media_url
+
+
 def _parse_post(row: dict[str, Any]) -> dict[str, Any]:
+    media_type, media_url = _parse_attachment(row)
     return {
         "id": row.get("id"),
         "message": row.get("message"),
         "created_time": row.get("created_time"),
         "permalink_url": row.get("permalink_url"),
         "full_picture": row.get("full_picture"),
+        "media_type": media_type,
+        "media_url": media_url,
         "reactions": (row.get("reactions") or {}).get("summary", {}).get("total_count", 0),
         "comments": (row.get("comments") or {}).get("summary", {}).get("total_count", 0),
         "shares": (row.get("shares") or {}).get("count", 0),
@@ -336,6 +368,152 @@ def _post_type(item: dict[str, Any]) -> str:
         if mt == "album":
             return "carousel"
     return "text"
+
+
+# ─── Compte publicitaire : personnes/rôles + facturation ──────────────────────
+# Données réelles du compte pub Meta via Graph API (mêmes credentials que le reste).
+# La liste des personnes requiert le scope `business_management` ; sans lui Meta
+# renvoie une erreur explicite → on la remonte telle quelle (aucune donnée inventée).
+
+# Les "tasks" Meta (permissions granulaires) → un libellé de rôle lisible, du plus
+# privilégié au moins. Un utilisateur avec MANAGE est administrateur, etc.
+_TASK_ROLE_ORDER: list[tuple[str, str]] = [
+    ("MANAGE", "Admin"),
+    ("ADVERTISE", "Advertiser"),
+    ("ANALYZE", "Analyst"),
+    ("DRAFT", "Draft"),
+]
+
+
+# Message (langage simple) affiché quand Meta refuse de lister les membres du
+# compte (accès non autorisé / erreur `business is required`). On ne montre PAS
+# l'erreur technique brute à l'utilisateur.
+ACCESS_BLOCKED_MSG = (
+    "L'accès à la liste des personnes de ce compte publicitaire n'a pas encore été "
+    "autorisé. Reconnecte ton compte Meta dans les Paramètres en acceptant la "
+    "gestion des membres du compte pour afficher les personnes et leurs rôles."
+)
+
+
+def _role_from_tasks(tasks: list[str]) -> str:
+    upper = {str(t).upper() for t in (tasks or [])}
+    for task, label in _TASK_ROLE_ORDER:
+        if task in upper:
+            return label
+    return "—"
+
+
+def resolve_business_id(ad_account_id: str, user_token: str) -> Optional[str]:
+    """ID du Business Manager propriétaire du compte pub, ou None si le compte
+    n'appartient à aucun Business (ou si le champ n'est pas lisible). Best-effort :
+    ne lève pas — l'appelant décide quoi faire d'un None."""
+    try:
+        data = _check(requests.get(
+            f"{GRAPH}/{ad_account_id}",
+            params={"access_token": user_token, "fields": "business"},
+            timeout=TIMEOUT,
+        ))
+    except GraphError:
+        return None
+    biz = data.get("business") or {}
+    bid = biz.get("id")
+    return str(bid) if bid else None
+
+
+def account_users(ad_account_id: str, user_token: str) -> list[dict[str, Any]]:
+    """Personnes ayant accès au compte publicitaire + leur rôle (via l'arête
+    `assigned_users`). Requiert `business_management`. Lève GraphError sinon.
+
+    Meta EXIGE le paramètre `business=<id>` sur `assigned_users` quand le compte
+    appartient à un Business Manager (sinon `(#100) The parameter business is
+    required`). On résout donc d'abord ce business_id et on le passe à l'appel."""
+    business_id = resolve_business_id(ad_account_id, user_token)
+    params: dict[str, Any] = {
+        "access_token": user_token, "fields": "id,name,tasks", "limit": 200,
+    }
+    if business_id:
+        params["business"] = business_id
+    data = _check(requests.get(
+        f"{GRAPH}/{ad_account_id}/assigned_users",
+        params=params,
+        timeout=TIMEOUT,
+    ))
+    out: list[dict[str, Any]] = []
+    for u in data.get("data", []):
+        tasks = u.get("tasks") or []
+        out.append({
+            "id": str(u.get("id")),
+            "name": u.get("name") or "(sans nom)",
+            "tasks": [str(t) for t in tasks],
+            "role": _role_from_tasks(tasks),
+        })
+    return out
+
+
+# Statuts numériques d'un compte publicitaire Meta → libellé lisible.
+_ACCOUNT_STATUS: dict[int, str] = {
+    1: "Actif", 2: "Désactivé", 3: "Impayé", 7: "En attente de revue",
+    8: "Pending settlement", 9: "In grace period", 100: "Pending closure",
+    101: "Fermé", 201: "Any active", 202: "Any closed",
+}
+
+
+def account_billing(ad_account_id: str, user_token: str) -> dict[str, Any]:
+    """Type de paiement + solde/dépense/seuil du compte pub (données réelles Meta).
+    Les montants Meta sont en unités mineures (centimes) → convertis en unités."""
+    data = _check(requests.get(
+        f"{GRAPH}/{ad_account_id}",
+        params={
+            "access_token": user_token,
+            "fields": "name,currency,account_status,amount_spent,balance,"
+                      "spend_cap,funding_source_details",
+        },
+        timeout=TIMEOUT,
+    ))
+
+    def _units(v: Any) -> Optional[float]:
+        try:
+            return round(float(v) / 100.0, 2) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    fs = data.get("funding_source_details") or {}
+    # `funding_source_details.type` peut être un ENTIER (enum Meta) ou une chaîne
+    # selon le moyen de paiement → on ne fait `.replace` que sur une vraie chaîne.
+    # Le libellé lisible vient de `display_string` (ex. « Visa ****1234 »).
+    raw_type = fs.get("type")
+    if isinstance(raw_type, str) and raw_type.strip():
+        payment_type = raw_type.replace("_", " ").title()
+    else:
+        # `type` entier (enum non documenté) → on n'invente pas de libellé ; le
+        # moyen de paiement lisible reste `display_string` (ex. « Visa ****1234 »).
+        payment_type = None
+
+    status = data.get("account_status")
+    account_status = None
+    if status is not None:
+        try:
+            account_status = _ACCOUNT_STATUS.get(int(status), str(status))
+        except (TypeError, ValueError):
+            account_status = str(status)
+
+    # Nombre de moyens de paiement enregistrés. Meta n'expose de façon fiable que la
+    # source de paiement ACTIVE (`funding_source_details`, déjà récupérée ci-dessus) :
+    # 1 si une carte active est présente, 0 sinon. Aucune donnée inventée, et pas
+    # d'appel Graph redondant (le champ multi-cartes n'existe pas de façon fiable).
+    card_count = 1 if fs.get("display_string") else 0
+
+    return {
+        "name": data.get("name"),
+        "currency": data.get("currency"),
+        "account_status": account_status,
+        "amount_spent": _units(data.get("amount_spent")),
+        "balance": _units(data.get("balance")),
+        "spend_cap": _units(data.get("spend_cap")),
+        "payment_type": payment_type,
+        "payment_display": fs.get("display_string"),
+        "card_count": card_count,
+    }
 
 
 def list_token_scopes(user_token: str) -> set[str]:
@@ -528,6 +706,56 @@ def delete_scheduled_post(post_id: str, user_token: str, page_id: str) -> dict[s
         f"{GRAPH}/{post_id}", params={"access_token": page_token}, timeout=TIMEOUT,
     )
     return _check(resp)
+
+
+def get_fans_online_by_hour(page_id: str, user_token: str) -> dict[str, Any]:
+    """Renvoie l'activité RÉELLE des abonnés de la page par heure de la journée.
+
+    S'appuie sur le metric Meta `page_fans_online_per_day` (nombre d'abonnés en
+    ligne à chaque heure, par jour). On moyenne sur les jours renvoyés pour obtenir
+    une courbe 0h–23h, puis on en déduit les meilleures heures de publication.
+
+    Dégradation gracieuse : si Meta n'expose pas la donnée (page trop récente, peu
+    d'abonnés, scope manquant), on renvoie `available: false` sans rien inventer."""
+    try:
+        page_token = resolve_page_token(user_token, page_id)
+    except GraphError as e:
+        logger.warning("Page token non résolu pour fans_online page=%s : %s", page_id, e)
+        page_token = user_token
+
+    hourly = [0.0] * 24
+    days_counted = 0
+    reason: Optional[str] = None
+    try:
+        resp = requests.get(
+            f"{GRAPH}/{page_id}/insights",
+            params={"access_token": page_token, "metric": "page_fans_online_per_day", "period": "day"},
+            timeout=TIMEOUT,
+        )
+        data = _check(resp)
+        for series in data.get("data", []):
+            for v in series.get("values", []):
+                val = v.get("value")
+                if isinstance(val, dict) and val:
+                    days_counted += 1
+                    for hour_str, count in val.items():
+                        try:
+                            h = int(hour_str)
+                        except (TypeError, ValueError):
+                            continue
+                        if 0 <= h < 24 and isinstance(count, (int, float)):
+                            hourly[h] += float(count)
+    except (GraphError, requests.RequestException) as e:
+        reason = str(e)
+        logger.info("page_fans_online_per_day indisponible page=%s : %s", page_id, reason)
+
+    if days_counted > 0:
+        hourly = [round(x / days_counted, 1) for x in hourly]
+        # Meilleures heures = top 3 par activité (ignore les heures à zéro).
+        ranked = sorted(range(24), key=lambda h: hourly[h], reverse=True)
+        best_hours = [h for h in ranked if hourly[h] > 0][:3]
+        return {"available": True, "hourly": hourly, "best_hours": best_hours, "days": days_counted}
+    return {"available": False, "hourly": [0.0] * 24, "best_hours": [], "days": 0, "reason": reason}
 
 
 def get_page_insights(

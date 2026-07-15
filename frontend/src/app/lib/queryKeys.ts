@@ -10,17 +10,20 @@ export function rangeId(r: DateRange): string {
  *  ce qui rend instantané le retour à une sélection déjà consultée. */
 export const qk = {
   accounts: ["accounts"] as const,
-  dashboard: (accountId: string | null, range: DateRange) =>
-    ["dashboard", accountId, rangeId(range)] as const,
-  campaigns: (accountId: string | null, range: DateRange) =>
-    ["campaigns", accountId, rangeId(range)] as const,
+  dashboard: (accountId: string | null, range: DateRange, platform: string = "all") =>
+    ["dashboard", accountId, rangeId(range), platform] as const,
+  campaigns: (accountId: string | null, range: DateRange, platform: string = "all") =>
+    ["campaigns", accountId, rangeId(range), platform] as const,
   campaignDetail: (accountId: string | null, id: string, range: DateRange, section: CampaignDetailSection) =>
     ["campaign-detail", accountId, id, rangeId(range), section] as const,
   page: (accountId: string | null) => ["page", accountId] as const,
-  audienceReach: (accountId: string | null, days: number | "all") =>
-    ["audience-reach", accountId, days] as const,
+  audienceReach: (accountId: string | null, days: number | "all", campaignId: string = "_all", platform: string = "all") =>
+    ["audience-reach", accountId, days, campaignId, platform] as const,
   audiences: (accountId: string | null) => ["audiences", accountId] as const,
   scheduledPosts: (accountId: string | null) => ["scheduled-posts", accountId] as const,
+  instagram: (accountId: string | null) => ["instagram", accountId] as const,
+  accountUsers: (accountId: string | null) => ["account-users", accountId] as const,
+  billing: (accountId: string | null) => ["billing", accountId] as const,
   conversations: ["conversations"] as const,
   messages: (id: string) => ["messages", id] as const,
   notifications: ["notifications"] as const,

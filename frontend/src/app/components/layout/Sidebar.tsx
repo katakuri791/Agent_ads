@@ -1,20 +1,24 @@
 import {
-  LayoutDashboard, BarChart3, Facebook, Users, CalendarClock, Sparkles, Settings as SettingsIcon, ChevronLeft,
+  LayoutDashboard, BarChart3, Facebook, Instagram, Users, CalendarClock, Sparkles, KeyRound, CreditCard, Settings as SettingsIcon, ChevronLeft,
 } from "lucide-react";
 
 export const NAV = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "campaigns", label: "Campaign Analysis", icon: BarChart3 },
   { id: "page", label: "Facebook Page", icon: Facebook },
+  { id: "instagram", label: "Instagram", icon: Instagram },
   { id: "audiences", label: "Audience Insights", icon: Users },
   { id: "schedule", label: "Schedule", icon: CalendarClock },
+  { id: "access", label: "Accès", icon: KeyRound },
+  { id: "payment", label: "Paiement", icon: CreditCard },
   { id: "ai", label: "AI Agent", icon: Sparkles },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export const TITLES: Record<string, string> = {
   overview: "Overview", campaigns: "Campaign Analysis", page: "Facebook Page",
-  audiences: "Audience Insights", schedule: "Schedule", ai: "AI Agent", settings: "Settings",
+  instagram: "Instagram", audiences: "Audience Insights", schedule: "Schedule",
+  access: "Accès", payment: "Paiement", ai: "AI Agent", settings: "Settings",
 };
 
 function Logo({ collapsed }: { collapsed: boolean }) {

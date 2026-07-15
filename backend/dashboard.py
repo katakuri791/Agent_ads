@@ -100,19 +100,32 @@ def get_account_dashboard(
     all_time: bool = False,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> dict[str, Any]:
     start, end, prev_start, prev_end = resolve_window(days, all_time, since, until)
 
+    # Toggle Facebook/Instagram : KPIs + série lus depuis la table plateforme.
+    # La démographie (âge/genre/pays) reste au niveau compte (non splittée par
+    # plateforme dans le cache) — cf. décision produit Phase 2.
+    if platform:
+        summary_fn: Callable[[], Any] = lambda: db.rpc_fb_summary_platform(account_id, start, end, platform)
+        series_fn: Callable[[], Any] = lambda: db.rpc_fb_timeseries_platform(account_id, start, end, platform)
+        prev_fn: Callable[[], Any] = lambda: db.rpc_fb_summary_platform(account_id, prev_start, prev_end, platform)
+    else:
+        summary_fn = lambda: db.rpc_fb_summary(account_id, start, end)
+        series_fn = lambda: db.rpc_fb_timeseries(account_id, start, end)
+        prev_fn = lambda: db.rpc_fb_summary(account_id, prev_start, prev_end)
+
     # Les 6 lectures sont indépendantes → en parallèle (≈ 1 RTT au lieu de 6).
     tasks: dict[str, Callable[[], Any]] = {
-        "summary": lambda: db.rpc_fb_summary(account_id, start, end),
-        "series": lambda: db.rpc_fb_timeseries(account_id, start, end),
+        "summary": summary_fn,
+        "series": series_fn,
         "age": lambda: db.rpc_fb_breakdown(account_id, start, end, "age"),
         "gender": lambda: db.rpc_fb_breakdown(account_id, start, end, "gender"),
         "country": lambda: db.rpc_fb_breakdown(account_id, start, end, "country"),
     }
     if prev_start:
-        tasks["prev"] = lambda: db.rpc_fb_summary(account_id, prev_start, prev_end)
+        tasks["prev"] = prev_fn
     res = _parallel(tasks)
     summary = res["summary"]
     prev = res.get("prev") or {}
@@ -217,6 +230,11 @@ def get_account_dashboard(
 # ─── Campagnes (liste + métrique par objectif) ───────────────────────────────
 
 
+def _div(num: float, den: float, ndigits: int = 2) -> float:
+    """Division protégée : 0.0 si dénominateur nul (pas d'infini ni d'erreur)."""
+    return round(num / den, ndigits) if den else 0.0
+
+
 def _campaign_row(r: dict) -> dict[str, Any]:
     spend = _safe_float(r.get("spend"))
     revenue = _safe_float(r.get("revenue"))
@@ -225,6 +243,13 @@ def _campaign_row(r: dict) -> dict[str, Any]:
     roi = round((revenue - spend) / spend * 100, 1) if spend else 0.0
     perf = metrics.calculate_performance_metric(r.get("objective"), r)
     daily_budget = r.get("daily_budget")
+    impressions = _safe_int(r.get("impressions"))
+    reach = _safe_int(r.get("reach"))
+    # Métriques vidéo brutes (0 si campagne non vidéo → colonnes simplement vides).
+    video_3s = _safe_int(r.get("video_3s"))
+    thruplays = _safe_int(r.get("thruplays"))
+    video_p100 = _safe_int(r.get("video_p100"))
+    inline_link_clicks = _safe_int(r.get("inline_link_clicks"))
     return {
         "id": r.get("id"),
         "name": r.get("name"),
@@ -232,7 +257,7 @@ def _campaign_row(r: dict) -> dict[str, Any]:
         "status": r.get("status"),
         "created_time": r.get("created_time"),
         "daily_budget": _safe_float(daily_budget) if daily_budget is not None else None,
-        "impressions": _safe_int(r.get("impressions")),
+        "impressions": impressions,
         "clicks": _safe_int(r.get("clicks")),
         "spend": spend,
         "ctr": _safe_float(r.get("ctr")),
@@ -244,6 +269,43 @@ def _campaign_row(r: dict) -> dict[str, Any]:
         "metric_name": perf["metric_name"],
         "metric_value": perf["metric_value"],
         "is_roas": perf["is_roas"],
+        # ── Métriques étendues (sélecteur de colonnes) ──────────────────────────
+        "reach": reach,
+        "frequency": _safe_float(r.get("frequency")),
+        "cpm": _safe_float(r.get("cpm")),
+        # Reach 1000 (CPP) = coût pour 1000 personnes touchées.
+        "cpp": _div(spend * 1000, reach),
+        "purchases": _safe_int(r.get("purchases")),
+        "leads": _safe_int(r.get("leads")),
+        "cost_per_purchase": _div(spend, _safe_int(r.get("purchases"))),
+        "cost_per_lead": _div(spend, _safe_int(r.get("leads"))),
+        "add_to_cart": _safe_int(r.get("add_to_cart")),
+        "initiate_checkout": _safe_int(r.get("initiate_checkout")),
+        "landing_page_views": _safe_int(r.get("landing_page_views")),
+        "link_clicks": _safe_int(r.get("link_clicks")),
+        "inline_link_clicks": inline_link_clicks,
+        "unique_clicks": _safe_int(r.get("unique_clicks")),
+        "outbound_clicks": _safe_int(r.get("outbound_clicks")),
+        # Link CTR = clics sur lien / impressions.
+        "link_ctr": _div(inline_link_clicks * 100, impressions),
+        "post_engagement": _safe_int(r.get("post_engagement")),
+        "post_reactions": _safe_int(r.get("post_reactions")),
+        "post_comments": _safe_int(r.get("post_comments")),
+        "post_shares": _safe_int(r.get("post_shares")),
+        "post_saves": _safe_int(r.get("post_saves")),
+        # ── Vidéo ───────────────────────────────────────────────────────────────
+        "video_3s": video_3s,
+        "thruplays": thruplays,
+        "video_p25": _safe_int(r.get("video_p25")),
+        "video_p50": _safe_int(r.get("video_p50")),
+        "video_p75": _safe_int(r.get("video_p75")),
+        "video_p100": video_p100,
+        "video_plays": _safe_int(r.get("video_plays")),
+        "cost_per_thruplay": _div(spend, thruplays),
+        # Hook rate = % d'impressions ayant regardé ≥ 3 s ; Hold rate = % de vues
+        # 3 s allées jusqu'au bout (proxies d'accroche / rétention créative).
+        "hook_rate": _div(video_3s * 100, impressions),
+        "hold_rate": _div(video_p100 * 100, video_3s),
     }
 
 
@@ -253,9 +315,15 @@ def list_campaigns(
     all_time: bool = False,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     start, end, _, _ = resolve_window(days, all_time, since, until)
-    return [_campaign_row(r) for r in db.rpc_fb_campaign_agg(account_id, start, end)]
+    rows = (
+        db.rpc_fb_campaign_agg_platform(account_id, start, end, platform)
+        if platform
+        else db.rpc_fb_campaign_agg(account_id, start, end)
+    )
+    return [_campaign_row(r) for r in rows]
 
 
 # ─── Audience reach (page Audiences) ─────────────────────────────────────────
@@ -315,6 +383,34 @@ def get_audience_reach(
     }
 
 
+def monthly_spend(account_id: str) -> list[dict[str, Any]]:
+    """Historique de dépense par mois (vraies dépenses agrégées du cache).
+
+    Sert de « historique de paiement » exploitable : l'API Graph n'expose pas les
+    factures détaillées, mais on reconstruit la chronologie réelle des dépenses
+    mensuelles à partir des insights déjà synchronisés."""
+    start, end, _, _ = resolve_window(all_time=True)
+    buckets: dict[str, dict[str, float]] = {}
+    for r in db.rpc_fb_timeseries(account_id, start, end):
+        d = str(r.get("date") or "")
+        if len(d) < 7:
+            continue
+        month = d[:7]  # YYYY-MM
+        b = buckets.setdefault(month, {"spend": 0.0, "impressions": 0.0, "clicks": 0.0})
+        b["spend"] += _safe_float(r.get("spend"))
+        b["impressions"] += _safe_int(r.get("impressions"))
+        b["clicks"] += _safe_int(r.get("clicks"))
+    return [
+        {
+            "month": m,
+            "spend": round(buckets[m]["spend"], 2),
+            "impressions": int(buckets[m]["impressions"]),
+            "clicks": int(buckets[m]["clicks"]),
+        }
+        for m in sorted(buckets.keys())
+    ]
+
+
 # ─── Détail campagne : onglets adsets / ads (depuis le cache) ─────────────────
 
 
@@ -345,6 +441,7 @@ def campaign_ads(account_id: str, campaign_id: str, start: str, end: str) -> lis
     for r in db.rpc_fb_ad_agg(account_id, start, end, campaign_id):
         conversions = _safe_int(r.get("purchases")) + _safe_int(r.get("leads"))
         out.append({
+            "id": r.get("id"),
             "name": r.get("name") or "Ad",
             "status": (r.get("status") or "ACTIVE"),
             "format": _format_label(r.get("format")),

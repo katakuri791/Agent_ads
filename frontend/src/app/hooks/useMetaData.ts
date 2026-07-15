@@ -14,27 +14,44 @@ export function errMessage(e: unknown): string | null {
 }
 
 // ── Dashboard (Overview) ─────────────────────────────────────────────────────
-export function useDashboard() {
+// `ignorePlatform` : l'Overview ne participe PAS au filtre Facebook/Instagram
+//  (toujours « tout le compte »), même si Campaigns a persisté un choix `ui_platform`.
+export function useDashboard(opts?: { ignorePlatform?: boolean }) {
   const { selectedAccountId } = useAccount();
-  const { range } = useFilters();
+  const { range, platform: ctxPlatform } = useFilters();
+  const platform = opts?.ignorePlatform ? undefined : ctxPlatform;
   return useQuery({
-    queryKey: qk.dashboard(selectedAccountId, range),
+    queryKey: qk.dashboard(selectedAccountId, range, platform),
     queryFn: () => {
       const { days, since, until } = dashboardArgs(range);
-      return api.getDashboard(days, selectedAccountId, since, until);
+      return api.getDashboard(days, selectedAccountId, since, until, platform);
     },
     placeholderData: keepPreviousData,
   });
 }
 
 // ── Campagnes (liste + insights ROI) ─────────────────────────────────────────
-export function useCampaigns() {
+export function useCampaigns(opts?: { ignorePlatform?: boolean }) {
   const { selectedAccountId } = useAccount();
-  const { range } = useFilters();
+  const { range, platform: ctxPlatform } = useFilters();
+  const platform = opts?.ignorePlatform ? undefined : ctxPlatform;
   return useQuery({
-    queryKey: qk.campaigns(selectedAccountId, range),
-    queryFn: () => api.getCampaigns(range, selectedAccountId),
+    queryKey: qk.campaigns(selectedAccountId, range, platform),
+    queryFn: () => api.getCampaigns(range, selectedAccountId, platform),
     placeholderData: keepPreviousData,
+  });
+}
+
+// ── Campagnes sur UN jour précis (suivi budget/dépense de la page Paiement) ──
+// Interroge les campagnes avec une fenêtre `since=until=<jour>` → la dépense
+// renvoyée est celle de ce seul jour, comparable au budget quotidien.
+export function useCampaignsOnDay(day: string) {
+  const { selectedAccountId } = useAccount();
+  return useQuery({
+    queryKey: ["campaigns-day", selectedAccountId, day],
+    queryFn: () => api.getCampaigns({ since: day, until: day }, selectedAccountId, null),
+    placeholderData: keepPreviousData,
+    enabled: !!day,
   });
 }
 
@@ -84,11 +101,14 @@ export function usePageData() {
 }
 
 // ── Audiences ────────────────────────────────────────────────────────────────
-export function useAudienceReach(days: number | "all") {
+// L'audience est volontairement DÉCOUPLÉE du toggle plateforme (Instagram retiré
+// de cette page) : elle agrège toujours toutes les plateformes. On ne lit donc
+// PAS `platform` du provider ici.
+export function useAudienceReach(days: number | "all", campaignId?: string | null) {
   const { selectedAccountId } = useAccount();
   return useQuery({
-    queryKey: qk.audienceReach(selectedAccountId, days),
-    queryFn: () => api.getAudienceReach(days, selectedAccountId),
+    queryKey: qk.audienceReach(selectedAccountId, days, campaignId || "_all", "all"),
+    queryFn: () => api.getAudienceReach(days, selectedAccountId, campaignId || undefined, null),
     placeholderData: keepPreviousData,
   });
 }
@@ -97,6 +117,34 @@ export function useAudiences() {
   return useQuery({
     queryKey: qk.audiences(selectedAccountId),
     queryFn: () => api.getAudiences(selectedAccountId),
+  });
+}
+
+// ── Instagram (profil + posts) ───────────────────────────────────────────────
+export function useInstagram() {
+  const { selectedAccountId } = useAccount();
+  return useQuery({
+    queryKey: qk.instagram(selectedAccountId),
+    queryFn: () => api.getInstagram(selectedAccountId),
+    placeholderData: keepPreviousData,
+  });
+}
+
+// ── Accès (personnes/rôles) + Facturation du compte pub Meta ─────────────────
+export function useAccountUsers() {
+  const { selectedAccountId } = useAccount();
+  return useQuery({
+    queryKey: qk.accountUsers(selectedAccountId),
+    queryFn: () => api.getAccountUsers(selectedAccountId),
+    placeholderData: keepPreviousData,
+  });
+}
+export function useBilling() {
+  const { selectedAccountId } = useAccount();
+  return useQuery({
+    queryKey: qk.billing(selectedAccountId),
+    queryFn: () => api.getBilling(selectedAccountId),
+    placeholderData: keepPreviousData,
   });
 }
 

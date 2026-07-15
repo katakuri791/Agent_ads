@@ -2,7 +2,7 @@ import { RefreshCw } from "lucide-react";
 import type { CampaignSummary } from "../lib/api";
 import { fmtMoney, fmtNum } from "../lib/format";
 import {
-  Card, KPICard, StatusBadge, MSButton, SectionTitle, LoadingOverlay, type Kpi,
+  Card, KPICard, MSButton, SectionTitle, LoadingOverlay, type Kpi,
 } from "../components/ms/primitives";
 import { LineChart, DonutChart } from "../components/ms/charts";
 import { WorldMap } from "../components/ms/worldmap";
@@ -10,10 +10,36 @@ import { ConnectPrompt, ErrorBanner, ErrorState, OBJ_COLORS } from "../component
 import { useDashboard, useCampaigns, errStatus, errMessage } from "../hooks/useMetaData";
 import { useFilters } from "../providers/FiltersProvider";
 
+/** Classe les campagnes « meilleures » sur une combinaison de : dépense engagée
+ *  ET qualité du retour (CTR, conversions/CTA, CPC, clics). Chaque métrique est
+ *  normalisée min-max sur l'ensemble des campagnes ayant réellement dépensé, puis
+ *  pondérée. Le CPC est inversé (plus bas = mieux). Données réelles uniquement :
+ *  on ne classe que les campagnes avec spend > 0. */
+function rankBestCampaigns(campaigns: CampaignSummary[], limit = 5): CampaignSummary[] {
+  const cand = campaigns.filter((c) => (c.spend || 0) > 0);
+  if (cand.length === 0) return [];
+  const range = (vals: number[]) => { const mn = Math.min(...vals), mx = Math.max(...vals); return { mn, span: mx - mn }; };
+  const norm = (v: number, r: { mn: number; span: number }) => (r.span <= 0 ? 1 : (v - r.mn) / r.span);
+  const rSpend = range(cand.map((c) => c.spend || 0));
+  const rCtr = range(cand.map((c) => c.ctr || 0));
+  const rClicks = range(cand.map((c) => c.clicks || 0));
+  const rCpc = range(cand.map((c) => c.cpc || 0));
+  const rConv = range(cand.map((c) => c.conversions || 0));
+  const score = (c: CampaignSummary) =>
+    0.30 * norm(c.spend || 0, rSpend) +
+    0.25 * norm(c.ctr || 0, rCtr) +
+    0.20 * norm(c.clicks || 0, rClicks) +
+    0.15 * (1 - norm(c.cpc || 0, rCpc)) + // CPC : plus bas = meilleur
+    0.10 * norm(c.conversions || 0, rConv);
+  return cand.slice().sort((a, b) => score(b) - score(a)).slice(0, limit);
+}
+
 export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void }) {
   const { rangeLabel } = useFilters();
-  const dash = useDashboard();
-  const camps = useCampaigns();
+  // L'Overview reste « tout le compte » : on ignore volontairement le filtre
+  // Facebook/Instagram (le toggle vit uniquement sur la page Campaigns).
+  const dash = useDashboard({ ignorePlatform: true });
+  const camps = useCampaigns({ ignorePlatform: true });
   const data = dash.data ?? null;
   const campaigns: CampaignSummary[] = camps.data ?? [];
   const loading = dash.isFetching;
@@ -52,7 +78,10 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
   });
 
   const series = (data.series || []).map((s) => ({ date: new Date(s.date), spend: s.spend, impressions: s.impressions }));
-  const topCampaigns = (data.top_campaigns || []).slice(0, 5);
+  // Classement « meilleures campagnes » calculé sur la vraie liste (spend + CTR +
+  // clics + CPC + conversions). Repli sur le top backend si la liste n'est pas encore
+  // chargée.
+  const topCampaigns = campaigns.length > 0 ? rankBestCampaigns(campaigns, 5) : (data.top_campaigns || []).slice(0, 5);
 
   const objMap: Record<string, number> = {};
   campaigns.forEach((c) => { const o = (c.objective || "Other").toUpperCase().replace(/_/g, " "); objMap[o] = (objMap[o] || 0) + c.spend; });
@@ -73,7 +102,9 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
             <span>Données · {rangeLabel}</span>
           )}
         </div>
-        <MSButton variant="outline" size="sm" icon={<RefreshCw size={14} />} onClick={() => { dash.refetch(); camps.refetch(); }} disabled={loading}>Rafraîchir</MSButton>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <MSButton variant="outline" size="sm" icon={<RefreshCw size={14} />} onClick={() => { dash.refetch(); camps.refetch(); }} disabled={loading}>Rafraîchir</MSButton>
+        </div>
       </div>
       {error && <ErrorBanner message={error} onRetry={() => dash.refetch()} />}
       <div className="ov-kpis">
@@ -116,23 +147,23 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
 
       <div className="ov-row ov-row-b">
         <Card pad={20}>
-          <SectionTitle>Meilleures campagnes</SectionTitle>
+          <SectionTitle right={<span style={{ fontSize: 11, color: "var(--tx-dim)" }}>Dépense × CTR × CPC × clics</span>}>Meilleures campagnes</SectionTitle>
           <div>
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 0.9fr 0.9fr 0.7fr 0.7fr", gap: 8, padding: "0 10px 8px", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", borderBottom: "1px solid var(--bd)" }}>
-              {["Campagne", "Statut", "Dépense", "ROAS", "Conv."].map((c, i) => <span key={i} style={{ textAlign: i > 1 ? "right" : "left" }}>{c}</span>)}
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 0.9fr 0.7fr 0.7fr 0.8fr", gap: 8, padding: "0 10px 8px", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", borderBottom: "1px solid var(--bd)" }}>
+              {["Campagne", "Dépense", "CTR", "CPC", "Clics"].map((c, i) => <span key={i} style={{ textAlign: i > 0 ? "right" : "left" }}>{c}</span>)}
             </div>
             {topCampaigns.length === 0
-              ? <div style={{ padding: 24, textAlign: "center", color: "var(--tx-dim)", fontSize: 13 }}>Aucune campagne active.</div>
+              ? <div style={{ padding: 24, textAlign: "center", color: "var(--tx-dim)", fontSize: 13 }}>Aucune campagne avec dépense sur la période.</div>
               : topCampaigns.map((c, i) => (
-                <div key={c.id || i} className="ms-trow" style={{ display: "grid", gridTemplateColumns: "2fr 0.9fr 0.9fr 0.7fr 0.7fr", gap: 8, alignItems: "center", padding: "11px 10px", borderRadius: 8, fontSize: 13.5 }}>
+                <div key={c.id || i} className="ms-trow" style={{ display: "grid", gridTemplateColumns: "2fr 0.9fr 0.7fr 0.7fr 0.8fr", gap: 8, alignItems: "center", padding: "11px 10px", borderRadius: 8, fontSize: 13.5 }}>
                   <span style={{ display: "flex", alignItems: "center", gap: 9, overflow: "hidden" }}>
-                    <span style={{ flexShrink: 0, width: 18, fontFamily: "JetBrains Mono", fontSize: 11, fontWeight: 600, color: "var(--tx-dim)" }}>{(i + 1).toString().padStart(2, "0")}</span>
+                    <span style={{ flexShrink: 0, width: 18, fontFamily: "JetBrains Mono", fontSize: 11, fontWeight: 600, color: i === 0 ? "var(--accent)" : "var(--tx-dim)" }}>{(i + 1).toString().padStart(2, "0")}</span>
                     <span style={{ color: "var(--tx)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
                   </span>
-                  <span><StatusBadge status={(c.status || "ACTIVE").toUpperCase()} dot /></span>
                   <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: "var(--tx-2)" }}>{fmtMoney(c.spend)}</span>
-                  <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: c.roas >= 3 ? "#22C55E" : "var(--tx-2)" }}>{(c.roas || 0).toFixed(2)}x</span>
-                  <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: c.conversions > 0 ? "#22C55E" : "var(--tx-2)" }}>{fmtNum(c.conversions)}</span>
+                  <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: (c.ctr || 0) >= 2 ? "#22C55E" : "var(--tx-2)" }}>{(c.ctr || 0).toFixed(2)}%</span>
+                  <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: "var(--tx-2)" }}>{fmtMoney(c.cpc || 0)}</span>
+                  <span style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: "var(--tx-2)" }}>{fmtNum(c.clicks)}</span>
                 </div>
               ))}
           </div>
