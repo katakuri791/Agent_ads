@@ -1,0 +1,146 @@
+stages:
+  - build
+  - publish
+  - deploy
+
+variables:
+  DOCKER_TLS_CERTDIR: ""
+
+  STATIC_TAG: "meta-ads-v1"
+
+  BACKEND_IMAGE: "$CI_REGISTRY_IMAGE/backend"
+  FRONTEND_IMAGE: "$CI_REGISTRY_IMAGE/frontend"
+
+.docker_login: &docker_login
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+
+##########################################################
+# BUILD BACKEND
+##########################################################
+
+build:backend:
+  stage: build
+
+  tags:
+    - runner2
+
+  <<: *docker_login
+
+  script:
+    - export DYNAMIC_TAG=$(date +%Y%m%d-%H%M%S)
+
+    - |
+      docker build \
+        --cache-from "$BACKEND_IMAGE:latest" \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        -t "$BACKEND_IMAGE:$STATIC_TAG" \
+        -t "$BACKEND_IMAGE:$DYNAMIC_TAG" \
+        ./backend
+
+    - docker push "$BACKEND_IMAGE:$STATIC_TAG"
+    - docker push "$BACKEND_IMAGE:$DYNAMIC_TAG"
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+##########################################################
+# BUILD FRONTEND
+##########################################################
+
+build:frontend:
+  stage: build
+
+  tags:
+    - runner2
+
+  <<: *docker_login
+
+  script:
+    - export DYNAMIC_TAG=$(date +%Y%m%d-%H%M%S)
+
+    - |
+      docker build \
+        --cache-from "$FRONTEND_IMAGE:latest" \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        -t "$FRONTEND_IMAGE:$STATIC_TAG" \
+        -t "$FRONTEND_IMAGE:$DYNAMIC_TAG" \
+        ./frontend
+
+    - docker push "$FRONTEND_IMAGE:$STATIC_TAG"
+    - docker push "$FRONTEND_IMAGE:$DYNAMIC_TAG"
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+##########################################################
+# PUBLISH BACKEND
+##########################################################
+
+publish:backend:
+  stage: publish
+
+  tags:
+    - runner2
+
+  <<: *docker_login
+
+  needs:
+    - build:backend
+
+  script:
+    - docker pull "$BACKEND_IMAGE:$STATIC_TAG"
+    - docker tag "$BACKEND_IMAGE:$STATIC_TAG" "$BACKEND_IMAGE:latest"
+    - docker push "$BACKEND_IMAGE:latest"
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+##########################################################
+# PUBLISH FRONTEND
+##########################################################
+
+publish:frontend:
+  stage: publish
+
+  tags:
+    - runner2
+
+  <<: *docker_login
+
+  needs:
+    - build:frontend
+
+  script:
+    - docker pull "$FRONTEND_IMAGE:$STATIC_TAG"
+    - docker tag "$FRONTEND_IMAGE:$STATIC_TAG" "$FRONTEND_IMAGE:latest"
+    - docker push "$FRONTEND_IMAGE:latest"
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+##########################################################
+# DEPLOY
+##########################################################
+
+deploy:
+  stage: deploy
+
+  tags:
+    - runner-vm.58
+
+  only:
+    - main
+
+  needs:
+    - publish:backend
+    - publish:frontend
+
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+
+  script:
+    - cd /home/tython/meta-ads
+    - docker compose pull
+    - docker compose up -d --remove-orphans
+    - docker image prune -af
