@@ -71,6 +71,9 @@ POST_REACTION_TYPES = {"post_reaction"}
 COMMENT_TYPES = {"comment"}
 SHARE_TYPES = {"post"}  # chez Meta, action_type "post" = partages
 SAVE_TYPES = {"onsite_conversion.post_save"}
+# Vues vidéo 3 s : chez Meta, l'action_type "video_view" = vues de 3 secondes.
+# Remplace le champ dédié `video_3_sec_watched_actions` (retiré de l'API v21).
+VIDEO_VIEW_TYPES = {"video_view"}
 
 
 def extract_conversion_columns(actions: Any, action_values: Any) -> dict[str, float]:
@@ -80,6 +83,8 @@ def extract_conversion_columns(actions: Any, action_values: Any) -> dict[str, fl
         "purchases": _sum_actions(actions, PURCHASE_TYPES),
         "revenue": round(_sum_actions(action_values, PURCHASE_TYPES), 2),
         "leads": _sum_actions(actions, LEAD_TYPES),
+        # Vues vidéo 3 s reconstruites depuis `actions` (champ dédié retiré en v21).
+        "video_3s": _sum_actions(actions, VIDEO_VIEW_TYPES),
         "post_engagement": _sum_actions(actions, POST_ENGAGEMENT_TYPES),
         "messaging_started": _sum_actions(actions, MESSAGING_TYPES),
         "app_installs": _sum_actions(actions, APP_INSTALL_TYPES),
@@ -101,8 +106,12 @@ def extract_conversion_columns(actions: Any, action_values: Any) -> dict[str, fl
 # on ne filtre PAS par action_type : le champ ne contient que la métrique voulue.
 
 # Champs insights bruts demandés à Meta → colonne stockée dans fb_insights_daily.
+# NB : `video_3_sec_watched_actions` a été RETIRÉ de l'API Marketing (déprécié
+# ~v13, invalide en v21 → erreur `(#100) … not valid for fields param` qui
+# faisait échouer TOUT le sync insights). La colonne `video_3s` est désormais
+# reconstruite depuis l'action `video_view` (cf. VIDEO_VIEW_TYPES ci-dessus),
+# qui est la vue vidéo 3 s canonique de Meta et reste renvoyée par `actions`.
 VIDEO_SOURCE_FIELDS: dict[str, str] = {
-    "video_3_sec_watched_actions": "video_3s",
     "video_thruplay_watched_actions": "thruplays",
     "video_p25_watched_actions": "video_p25",
     "video_p50_watched_actions": "video_p50",
