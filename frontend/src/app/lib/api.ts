@@ -1,7 +1,11 @@
 import { AuthUser, clearToken, getRefreshToken, getToken, setCachedUser, setRefreshToken, setToken } from "./auth";
 
-const API_BASE: string =
-  (import.meta as any).env?.VITE_API_URL || "http://localhost:8000";
+// On retire tout `/` final : les chemins passés ci-dessous commencent déjà par
+// `/` (ex. `/auth/signup`). Sans ça, une VITE_API_URL finissant par `/` produit
+// une URL à double slash (`…com//auth/signup`) que FastAPI renvoie en 404.
+const API_BASE: string = (
+  (import.meta as any).env?.VITE_API_URL || "http://localhost:8000"
+).replace(/\/+$/, "");
 
 export class ApiError extends Error {
   status: number;
