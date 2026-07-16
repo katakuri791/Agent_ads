@@ -2,12 +2,21 @@ import os
 import secrets
 
 from dotenv import load_dotenv
-from supabase import create_client, Client
+
+from .smartdb import SmartDBClient
 
 load_dotenv()
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+# ─── SmartDB (API REST tybotflow) — remplace Supabase côté client ─────────────
+# Le client livre une base SmartDB (NocoDB) et non Supabase. On lit désormais les
+# données via l'API REST SmartDB. Voir backend/smartdb.py.
+SMARTDB_BASE_URL = os.environ.get("SMARTDB_BASE_URL", "https://api.tybotflow.com/api/v1")
+SMARTDB_API_KEY = os.environ.get("SMARTDB_API_KEY", "")
+SMARTDB_BASE_ID = os.environ.get("SMARTDB_BASE_ID", "pmrlw1xde7g9e")
+
+# Anciennes variables Supabase — conservées optionnelles (plus requises au boot).
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
@@ -32,4 +41,11 @@ CORS_ORIGINS = [
     "http://127.0.0.1:5173",
 ]
 
-supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+# `supabase_admin` garde son nom pour ne rien changer aux 60 sites d'appel, mais
+# c'est désormais l'adaptateur SmartDB. La construction ne fait aucun appel réseau
+# (sûr à l'import) : une clé manquante n'échoue qu'au premier appel réel.
+supabase_admin = SmartDBClient(
+    base_url=SMARTDB_BASE_URL,
+    api_key=SMARTDB_API_KEY,
+    base_id=SMARTDB_BASE_ID,
+)
