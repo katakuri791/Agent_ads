@@ -40,7 +40,7 @@ CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     # Origine du frontend de production (le navigateur y sert la page qui
-    # appelle l'API sur api.metaads.tybotflow.com) → doit être autorisée.
+    # appelle l'API sur metaads-api.tybotflow.com) → doit être autorisée.
     "https://metaads.tybotflow.com",
 ]
 
