@@ -39,6 +39,9 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    # Origine du frontend de production (le navigateur y sert la page qui
+    # appelle l'API sur api.metaads.tybotflow.com) → doit être autorisée.
+    "https://metaads.tybotflow.com",
 ]
 
 # `supabase_admin` garde son nom pour ne rien changer aux 60 sites d'appel, mais
