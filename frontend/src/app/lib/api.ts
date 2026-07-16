@@ -7,6 +7,14 @@ const API_BASE: string = (
   (import.meta as any).env?.VITE_API_URL || "http://localhost:8000"
 ).replace(/\/+$/, "");
 
+/** Construit l'URL finale en garantissant EXACTEMENT un `/` entre la base et le
+ *  chemin — quels que soient les slashes en trop de chaque côté (base finissant
+ *  par `/`, chemin commençant ou non par `/`). Point unique de jointure : plus
+ *  aucun `${API_BASE}${path}` dispersé ne peut réintroduire un `//auth/signup`. */
+export function buildUrl(path: string): string {
+  return `${API_BASE}/${path.replace(/^\/+/, "")}`;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -54,7 +62,7 @@ async function tryRefresh(): Promise<boolean> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       try {
-        const res = await fetchWithTimeout(`${API_BASE}/auth/refresh`, {
+        const res = await fetchWithTimeout(buildUrl("/auth/refresh"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ refresh_token: rt }),
@@ -93,7 +101,7 @@ async function request<T>(
     const token = getToken();
     if (token) headers["Authorization"] = `Bearer ${token}`;
   }
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
+  const res = await fetchWithTimeout(buildUrl(path), { ...options, headers });
   if (!res.ok) {
     // 401 sur une route normale : on tente un refresh silencieux puis on rejoue
     // la requête UNE fois. Échec du refresh → session morte → logout.
@@ -118,7 +126,7 @@ async function requestForm<T>(path: string, form: FormData, timeoutMs?: number, 
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: "POST", body: form, headers }, timeoutMs);
+  const res = await fetchWithTimeout(buildUrl(path), { method: "POST", body: form, headers }, timeoutMs);
   if (!res.ok) {
     if (res.status === 401 && !isRetry && shouldTryRefresh(path)) {
       if (await tryRefresh()) return requestForm<T>(path, form, timeoutMs, true);

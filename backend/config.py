@@ -20,7 +20,7 @@ SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 
 JWT_SECRET = os.environ.get("JWT_SECRET") or os.environ.get(
     "SUPABASE_JWT_SECRET"
@@ -39,9 +39,11 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    # Origine du frontend de production (le navigateur y sert la page qui
-    # appelle l'API sur metaads-api.tybotflow.com) → doit être autorisée.
+    # Origine du FRONTEND de production (la page que le navigateur charge et qui
+    # appelle l'API) → c'est CELLE-CI qui doit être autorisée, sinon le navigateur
+    # bloque les appels. On garde aussi l'origine de l'API (inoffensif).
     "https://metaads.tybotflow.com",
+    "https://metaads-api.tybotflow.com",
 ]
 
 # `supabase_admin` garde son nom pour ne rien changer aux 60 sites d'appel, mais
