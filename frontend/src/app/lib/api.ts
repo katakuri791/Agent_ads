@@ -760,17 +760,30 @@ export const api = {
   getScheduledPosts: (accountId?: string | null) =>
     request<ScheduledPostsResponse>(`/meta/scheduled-posts?_=1${acctParam(accountId)}`),
 
-  /** Planifie un post (texte/lien/photo/vidéo). `scheduledTime` = ISO 8601. */
+  /** Planifie un post sur Facebook ou Instagram. `scheduledTime` = ISO 8601.
+   *  Instagram : fournir `image_url` ou `video_url` (URL HTTPS publique). */
   createScheduledPost: (
-    body: { scheduledTime: string; message?: string; link?: string; image?: File | null; video?: File | null },
+    body: {
+      scheduledTime: string;
+      message?: string;
+      link?: string;
+      image?: File | null;
+      video?: File | null;
+      platform?: "facebook" | "instagram";
+      image_url?: string;
+      video_url?: string;
+    },
     accountId?: string | null,
   ) => {
     const form = new FormData();
     form.append("scheduled_time", body.scheduledTime);
     form.append("message", body.message || "");
+    form.append("platform", body.platform || "facebook");
     if (body.link) form.append("link", body.link);
     if (body.image) form.append("image", body.image);
     if (body.video) form.append("video", body.video);
+    if (body.image_url) form.append("image_url", body.image_url);
+    if (body.video_url) form.append("video_url", body.video_url);
     return requestForm<{ ok: boolean; post_id?: string | null }>(
       `/meta/scheduled-posts?_=1${acctParam(accountId)}`,
       form,

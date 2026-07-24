@@ -34,6 +34,8 @@ from backend.db import (
     create_conversation,
     create_meta_account,
     create_scheduled_post_record,
+    finalize_scheduled_post,
+    list_due_ig_scheduled_posts,
     list_scheduled_post_records,
     set_scheduled_post_status,
     delete_meta_account,
@@ -157,14 +159,68 @@ async def _run_sync_job() -> None:
         logger.exception("fb_sync job crashed")
 
 
+# Intervalle du job de publication Instagram (Meta ne planifie pas IG → c'est nous).
+IG_PUBLISH_INTERVAL_MINUTES = int(os.environ.get("IG_PUBLISH_INTERVAL_MINUTES", "1"))
+
+
+def _publish_due_ig_posts() -> None:
+    """Publie les posts Instagram dus (bloquant → exécuté dans un thread).
+
+    Pour chaque post arrivé à échéance : résout le token du compte, publie via
+    l'API IG (container + media_publish), puis marque `published`/`failed`.
+    Chaque post est isolé — un échec n'empêche pas les autres."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    due = list_due_ig_scheduled_posts(now_iso)
+    if not due:
+        return
+    logger.info("ig_publish: %d post(s) Instagram à publier", len(due))
+    for post in due:
+        row_id = post.get("id")
+        account = get_meta_account(post.get("user_id"), post.get("account_id"))
+        token = (account or {}).get("meta_access_token")
+        page_id = post.get("page_id") or (account or {}).get("meta_page_id")
+        if not token or not page_id:
+            finalize_scheduled_post(row_id, "failed")
+            logger.warning("ig_publish: post %s sans token/page → failed", row_id)
+            continue
+        media_url = post.get("ig_media_url")
+        is_video = (post.get("ig_media_type") or "image") == "video"
+        try:
+            result = meta_instagram.publish_ig_now(
+                page_id,
+                token,
+                caption=post.get("message") or "",
+                image_url=None if is_video else media_url,
+                video_url=media_url if is_video else None,
+            )
+            finalize_scheduled_post(row_id, "published", meta_post_id=result.get("post_id"))
+        except Exception:  # noqa: BLE001 — on isole CHAQUE post
+            finalize_scheduled_post(row_id, "failed")
+            logger.exception("ig_publish: échec publication du post %s", row_id)
+
+
+async def _run_ig_publish_job() -> None:
+    try:
+        await asyncio.to_thread(_publish_due_ig_posts)
+    except Exception:
+        logger.exception("ig_publish job crashed")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     scheduler.add_job(
         _run_sync_job, "interval", minutes=SYNC_INTERVAL_MINUTES,
         id="fb_sync", max_instances=1, coalesce=True,
     )
+    scheduler.add_job(
+        _run_ig_publish_job, "interval", minutes=IG_PUBLISH_INTERVAL_MINUTES,
+        id="ig_publish", max_instances=1, coalesce=True,
+    )
     scheduler.start()
-    logger.info("fb_sync scheduled every %d min", SYNC_INTERVAL_MINUTES)
+    logger.info(
+        "fb_sync scheduled every %d min; ig_publish every %d min",
+        SYNC_INTERVAL_MINUTES, IG_PUBLISH_INTERVAL_MINUTES,
+    )
     if SYNC_ON_STARTUP:
         # Sync initial non bloquant pour le démarrage du serveur.
         asyncio.create_task(_run_sync_job())
@@ -652,14 +708,20 @@ async def route_create_scheduled_post(
     link: Optional[str] = Form(None),
     image: Optional[UploadFile] = File(None),
     video: Optional[UploadFile] = File(None),
+    platform: str = Form("facebook"),       # "facebook" | "instagram"
+    image_url: Optional[str] = Form(None),  # Instagram : URL HTTPS publique de l'image
+    video_url: Optional[str] = Form(None),  # Instagram : URL HTTPS publique de la vidéo
     account_id: Optional[str] = Query(None),
     user: UserPublic = Depends(get_current_user),
 ) -> dict:
-    """Planifie un post (texte/lien/photo/vidéo) publié automatiquement par Meta.
-    Précédence du média : vidéo > image > texte."""
+    """Planifie un post sur Facebook (texte/lien/photo/vidéo) ou Instagram (URL media).
+    Instagram : l'API IG Content Publishing exige une URL HTTPS publique."""
     settings = _resolve_account(user.id, account_id, need_page=True)
     message = (message or "").strip()
     link = (link or "").strip() or None
+    image_url = (image_url or "").strip() or None
+    video_url = (video_url or "").strip() or None
+    platform = (platform or "facebook").lower().strip()
 
     # Accepte un timestamp epoch (secondes) ou une date ISO 8601.
     raw = (scheduled_time or "").strip()
@@ -676,6 +738,46 @@ async def route_create_scheduled_post(
             detail="La planification doit être au moins 10 minutes dans le futur (contrainte Meta).",
         )
 
+    # ── Chemin Instagram ──────────────────────────────────────────────────────
+    # Meta NE planifie PAS Instagram : on ne fait AUCUN appel Meta ici. On stocke
+    # la demande (légende + URL média + type) et le job `ig_publish` la publie à
+    # l'heure prévue (container + media_publish). Cf. meta_instagram.publish_ig_now.
+    if platform == "instagram":
+        media_url = video_url or image_url
+        if not media_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Instagram nécessite l'URL HTTPS publique d'une image ou d'une vidéo.",
+            )
+        if not media_url.lower().startswith("https://"):
+            raise HTTPException(
+                status_code=400,
+                detail="L'URL du média Instagram doit être en HTTPS et publiquement accessible.",
+            )
+        ig_media_type = "video" if video_url else "image"
+        # Pour IG, la persistance EST l'opération (aucun appel Meta ici) → contrairement
+        # au FB où elle est best-effort, un échec doit remonter une vraie erreur.
+        record = create_scheduled_post_record(
+            user.id,
+            settings["meta_page_id"],
+            meta_post_id=None,
+            scheduled_time=datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            post_type=ig_media_type,
+            message=message,
+            link=None,
+            account_id=settings.get("id"),
+            platform="instagram",
+            ig_media_url=media_url,
+            ig_media_type=ig_media_type,
+        )
+        if not record:
+            raise HTTPException(
+                status_code=500,
+                detail="Impossible d'enregistrer la publication Instagram planifiée. Réessaie plus tard.",
+            )
+        return {"ok": True, "scheduled": True}
+
+    # ── Chemin Facebook (comportement existant) ───────────────────────────────
     video_data = await video.read() if video is not None else b""
     if video_data and len(video_data) > 200 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Vidéo trop lourde (>200 Mo).")
@@ -685,9 +787,6 @@ async def route_create_scheduled_post(
     if not message and not image_data and not video_data:
         raise HTTPException(status_code=400, detail="Un message, une image ou une vidéo est requis.")
 
-    # Garde-fou : sans `pages_manage_posts`, un upload « réussit » mais produit un
-    # média non publié orphelin (invisible dans scheduled_posts, non supprimable).
-    # On refuse proprement AVANT de créer cet orphelin.
     try:
         meta_pages.ensure_can_manage_posts(settings["meta_access_token"])
     except meta_pages.GraphError as exc:
@@ -707,7 +806,6 @@ async def route_create_scheduled_post(
     except Exception as exc:
         raise _meta_http_error(exc)
     post_id = result.get("post_id") or result.get("id")
-    # Persiste la planification pour que l'historique survive à la publication.
     post_type = "video" if video_data else "image" if image_data else "link" if link else "text"
     create_scheduled_post_record(
         user.id,
