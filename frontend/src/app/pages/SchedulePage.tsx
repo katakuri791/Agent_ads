@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Plus, X, RefreshCw, Trash2, Send, Clock,
   Calendar as CalendarIcon, Image as ImageIcon, Film, Link2, FileText, Loader2, Lock,
-  LayoutGrid, TrendingUp,
+  LayoutGrid, TrendingUp, Facebook, Instagram,
 } from "lucide-react";
 import { api, ApiError, type ScheduledPost, type ScheduledPostType, type PageBestTimes } from "../lib/api";
 import { qk } from "../lib/queryKeys";
@@ -56,7 +56,7 @@ function PostChip({ post, onClick, compact }: { post: SchedPost; onClick: (p: Sc
     <button onClick={(e) => { e.stopPropagation(); onClick(post); }}
       className={"ms-sched-chip" + (past ? " ms-sched-past" : "")}
       title={past ? "Déjà publié · cliquer pour voir le détail" : undefined}
-      style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: compact ? "3px 7px" : "5px 8px", borderRadius: 8, background: col + "18", border: "1px solid " + col + "40", borderLeft: "3px solid " + col, color: "var(--tx)", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: compact ? 10.5 : 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+      style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: compact ? "3px 7px" : "5px 8px", borderRadius: 8, background: col + "18", border: "1px solid " + col + "40", color: "var(--tx)", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: compact ? 10.5 : 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
       <span style={{ color: col, display: "inline-flex", flexShrink: 0 }}><TypeIcon type={post.type} size={compact ? 10 : 12} /></span>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{post.message || TYPE_LABEL[post.type]}</span>
     </button>
@@ -184,7 +184,7 @@ function DayView({ cursor, posts, today, onCellClick, onPostClick }: {
                 <div key={p.id} onClick={(e) => { e.stopPropagation(); onPostClick(p); }}
                   className={"ms-sched-day-event" + (isPast(p) ? " ms-sched-past" : "")}
                   title={isPast(p) ? "Déjà publié · cliquer pour voir le détail" : undefined}
-                  style={{ position: "absolute", top, left: 12, right: 12, padding: "10px 12px", background: TYPE_COLOR[p.type] + "20", border: "1px solid " + TYPE_COLOR[p.type] + "50", borderLeft: "3px solid " + TYPE_COLOR[p.type], borderRadius: 12, cursor: "pointer" }}>
+                  style={{ position: "absolute", top, left: 12, right: 12, padding: "10px 12px", background: TYPE_COLOR[p.type] + "20", border: "1px solid " + TYPE_COLOR[p.type] + "50", borderRadius: 12, cursor: "pointer" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ color: TYPE_COLOR[p.type], display: "inline-flex" }}><TypeIcon type={p.type} size={13} /></span>
                     <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)" }}>{fmtTime(p.when)}</span>
@@ -324,10 +324,14 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
   open: boolean; initialDate: Date | null; accountId: string | null; onClose: () => void; onDone: () => void;
 }) {
   const toast = useToast();
+  const [platform, setPlatform] = useState<"facebook" | "instagram">("facebook");
   const [type, setType] = useState<ScheduledPostType>("image");
   const [message, setMessage] = useState("");
   const [link, setLink] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  // Instagram: URL publique de l'image ou vidéo (IG Content API exige une URL HTTPS).
+  const [igMediaUrl, setIgMediaUrl] = useState("");
+  const [igMediaType, setIgMediaType] = useState<"image" | "video">("image");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("09:00");
 
@@ -365,6 +369,7 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
     }
 
     setType("image"); setMessage(""); setLink(""); setFile(null);
+    setIgMediaUrl(""); setIgMediaType("image");
     setDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
     setTime(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`);
   }, [open, initialDate]);
@@ -377,35 +382,53 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
   const mutation = useMutation({
     mutationFn: () => {
       const when = new Date(`${date}T${time}:00`);
+      if (platform === "instagram") {
+        return api.createScheduledPost({
+          scheduledTime: when.toISOString(),
+          message,
+          platform: "instagram",
+          image_url: igMediaType === "image" ? igMediaUrl : undefined,
+          video_url: igMediaType === "video" ? igMediaUrl : undefined,
+        }, accountId);
+      }
       return api.createScheduledPost({
         scheduledTime: when.toISOString(),
         message,
+        platform: "facebook",
         link: type === "link" ? link : undefined,
         image: type === "image" ? file : null,
         video: type === "video" ? file : null,
       }, accountId);
     },
-    onSuccess: () => { toast("Post planifié", { kind: "success", msg: "Il sera publié automatiquement par Meta." }); onDone(); },
+    onSuccess: () => {
+      const dest = platform === "instagram" ? "Instagram" : "Facebook";
+      toast("Post planifié", { kind: "success", msg: `Il sera publié automatiquement sur ${dest}.` });
+      onDone();
+    },
     onError: (e) => toast("Échec de la planification", { kind: "error", msg: e instanceof ApiError ? e.message : undefined }),
   });
 
-  // Valide le créneau côté client (message clair) avant d'appeler Meta.
   const handleSubmit = () => {
     const when = new Date(`${date}T${time}:00`);
     if (isNaN(when.getTime())) { toast("Date invalide", { kind: "error", msg: "Vérifie la date et l'heure." }); return; }
-    // Meta refuse un créneau à moins de 10 min : on le dit clairement AVANT l'appel,
-    // au lieu de laisser remonter l'erreur brute (et anglaise) de Meta.
     if (when.getTime() < Date.now() + 10 * 60 * 1000) {
       toast("Créneau trop tôt", { kind: "error", msg: "La date doit être au moins 10 minutes dans le futur (contrainte Meta)." });
+      return;
+    }
+    if (platform === "instagram" && !igMediaUrl.trim()) {
+      toast("URL manquante", { kind: "error", msg: "Instagram nécessite l'URL publique d'une image ou d'une vidéo." });
       return;
     }
     mutation.mutate();
   };
 
   if (!open) return null;
-  const needsMedia = type === "image" || type === "video";
-  const canSubmit = !mutation.isPending && !!date && !!time
-    && Boolean(message.trim() || file || (type === "link" && link.trim()));
+  const needsMedia = platform === "facebook" && (type === "image" || type === "video");
+  const canSubmit = !mutation.isPending && !!date && !!time && (
+    platform === "instagram"
+      ? igMediaUrl.trim().startsWith("http")
+      : Boolean(message.trim() || file || (type === "link" && link.trim()))
+  );
 
   return (
     <div onClick={() => !mutation.isPending && onClose()} className="ms-fade-up" style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(6,13,31,.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -421,6 +444,26 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
           <button onClick={onClose} className="ms-icon-btn" style={{ width: 34, height: 34, borderRadius: 10, background: "transparent", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X size={16} /></button>
         </div>
         <div style={{ padding: 24, overflow: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
+          {/* Sélecteur de plateforme : Facebook ou Instagram */}
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Publier sur</label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {(["facebook", "instagram"] as const).map((p) => {
+                const active = platform === p;
+                const col = p === "facebook" ? "#1877F2" : "#E1306C";
+                const Icon = p === "facebook" ? Facebook : Instagram;
+                return (
+                  <button key={p} onClick={() => setPlatform(p)} className="ms-btn"
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "10px 14px", borderRadius: 10, cursor: "pointer", background: active ? col + "14" : "var(--surf-inset)", border: "1.5px solid " + (active ? col : "var(--bd)"), color: active ? col : "var(--tx-3)" }}>
+                    <Icon size={16} />
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{p === "facebook" ? "Facebook" : "Instagram"}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {platform === "facebook" && (
           <div>
             <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Type de post</label>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
@@ -436,12 +479,48 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
               })}
             </div>
           </div>
+          )}
           <div>
-            <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}><span>Légende</span><span style={{ color: "var(--tx-dim)", fontFamily: "JetBrains Mono", fontSize: 11 }}>{message.length} / 2200</span></label>
-            <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={4} maxLength={2200} placeholder="Que veux-tu partager ?"
+            <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>
+              <span>{platform === "instagram" ? "Légende (caption)" : "Légende"}</span>
+              <span style={{ color: "var(--tx-dim)", fontFamily: "JetBrains Mono", fontSize: 11 }}>{message.length} / 2200</span>
+            </label>
+            <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={4} maxLength={2200}
+              placeholder={platform === "instagram" ? "Légende de la publication Instagram…" : "Que veux-tu partager ?"}
               style={{ width: "100%", background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRadius: 12, padding: 14, color: "var(--tx-2)", fontFamily: "IBM Plex Sans", fontSize: 14, outline: "none", resize: "vertical", lineHeight: 1.5 }} />
           </div>
-          {type === "link" && (
+
+          {/* ── Champs spécifiques Instagram ─────────────────────────────── */}
+          {platform === "instagram" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Type de média</label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {(["image", "video"] as const).map((mt) => (
+                    <button key={mt} onClick={() => setIgMediaType(mt)} className="ms-btn"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px", borderRadius: 10, cursor: "pointer", background: igMediaType === mt ? "#E1306C14" : "var(--surf-inset)", border: "1.5px solid " + (igMediaType === mt ? "#E1306C" : "var(--bd)"), color: igMediaType === mt ? "#E1306C" : "var(--tx-3)" }}>
+                      {mt === "image" ? <ImageIcon size={15} /> : <Film size={15} />}
+                      <span style={{ fontSize: 12, fontWeight: 500 }}>{mt === "image" ? "Photo" : "Vidéo / Reel"}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>
+                  URL publique {igMediaType === "image" ? "de l'image" : "de la vidéo"}
+                </label>
+                <input value={igMediaUrl} onChange={(e) => setIgMediaUrl(e.target.value)}
+                  placeholder={igMediaType === "image" ? "https://example.com/photo.jpg" : "https://example.com/video.mp4"}
+                  style={{ width: "100%", height: 40, background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRadius: 10, padding: "0 14px", color: "var(--tx-2)", fontFamily: "IBM Plex Sans", fontSize: 13, outline: "none" }} />
+                <div style={{ marginTop: 6, fontSize: 11, color: "var(--tx-dim)" }}>
+                  L'API Instagram exige une URL HTTPS publiquement accessible (pas un fichier local).
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Champs spécifiques Facebook ───────────────────────────────── */}
+          {platform === "facebook" && type === "link" && (
             <div>
               <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Lien</label>
               <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://…"

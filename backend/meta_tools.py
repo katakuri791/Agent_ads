@@ -530,6 +530,211 @@ def build_meta_tools(
             f"- Abonnés actuels : {stats.get('fans', 0):,}"
         )
 
+    # ── Outils de lecture du tableau de bord (cache) ──────────────────────────
+    # Ces outils lisent les données du cache (zéro appel Meta en temps réel)
+    # pour permettre à l'agent de donner des analyses et des stratégies.
+
+    @tool
+    def get_dashboard_overview(days: int = 30) -> str:
+        """Lit les KPIs publicitaires depuis le cache : dépense totale, impressions,
+        clics, portée, CTR, CPC, CPM, ROAS. Couvre les N derniers jours.
+        Utilise cette tool pour répondre à "comment vont mes pubs ?" ou donner une
+        vue d'ensemble des performances.
+
+        Args:
+            days: nombre de jours (7, 30, 90). Défaut 30.
+        """
+        from . import dashboard as _db
+        days = max(1, min(int(days), 90))
+        try:
+            data = _db.get_account_dashboard(ad_account_id, days=days)
+        except Exception as e:
+            return f"❌ Impossible de lire le tableau de bord : {e}"
+        kpi = data.get("kpi_row") or {}
+        chg = data.get("changes") or {}
+        prof = data.get("conversion_profile", "none")
+
+        def _chg_str(k: str) -> str:
+            v = chg.get(k)
+            if v is None:
+                return ""
+            sign = "+" if v >= 0 else ""
+            return f" ({sign}{v:.1f}% vs période préc.)"
+
+        lines = [f"=== Performances du compte ({days}j) ==="]
+        spend = kpi.get("spend", 0)
+        lines.append(f"- Dépense : {spend:.2f}{_chg_str('spend')}")
+        lines.append(f"- Impressions : {int(kpi.get('impressions', 0)):,}{_chg_str('impressions')}")
+        lines.append(f"- Portée : {int(kpi.get('reach', 0)):,}{_chg_str('reach')}")
+        lines.append(f"- Clics : {int(kpi.get('clicks', 0)):,}{_chg_str('clicks')}")
+        ctr = kpi.get("ctr", 0)
+        cpc = kpi.get("cpc", 0)
+        cpm = kpi.get("cpm", 0)
+        if ctr:
+            lines.append(f"- CTR : {ctr:.2f}%{_chg_str('ctr')}")
+        if cpc:
+            lines.append(f"- CPC : {cpc:.2f}{_chg_str('cpc')}")
+        if cpm:
+            lines.append(f"- CPM : {cpm:.2f}{_chg_str('cpm')}")
+        if prof == "sales":
+            roas = data.get("roas", 0)
+            revenue = data.get("revenue", 0)
+            lines.append(f"- Revenus : {revenue:.2f}")
+            lines.append(f"- ROAS : {roas:.2f}x")
+        elif prof == "leads":
+            leads = data.get("leads", 0)
+            cost_per_lead = data.get("cost_per_lead", 0)
+            lines.append(f"- Leads : {leads:,}")
+            if cost_per_lead:
+                lines.append(f"- Coût/Lead : {cost_per_lead:.2f}")
+        return "\n".join(lines)
+
+    @tool
+    def get_campaigns_performance(days: int = 30) -> str:
+        """Liste les performances par campagne depuis le cache : nom, statut, dépense,
+        impressions, clics, CTR, CPC. Idéal pour comparer les campagnes ou identifier
+        celles qui performent le mieux ou le moins bien.
+
+        Args:
+            days: période en jours (7, 30, 90). Défaut 30.
+        """
+        from . import dashboard as _db
+        days = max(1, min(int(days), 90))
+        try:
+            rows = _db.list_campaigns(ad_account_id, days=days)
+        except Exception as e:
+            return f"❌ Impossible de récupérer les campagnes : {e}"
+        if not rows:
+            return "Aucune donnée de campagne dans le cache pour cette période."
+        lines = [f"=== Campagnes ({days}j) — {len(rows)} campagne(s) ==="]
+        for r in rows:
+            name = r.get("name", "?")
+            status = r.get("status", "?")
+            spend = float(r.get("spend") or 0)
+            impr = int(r.get("impressions") or 0)
+            clicks = int(r.get("clicks") or 0)
+            ctr = float(r.get("ctr") or 0)
+            cpc = float(r.get("cpc") or 0)
+            lines.append(
+                f"\n• {name} [{status}]\n"
+                f"  Dépense: {spend:.2f} | Impressions: {impr:,} | Clics: {clicks:,}"
+                + (f" | CTR: {ctr:.2f}%" if ctr else "")
+                + (f" | CPC: {cpc:.2f}" if cpc else "")
+            )
+        return "\n".join(lines)
+
+    @tool
+    def get_audience_breakdown(days: int = 30) -> str:
+        """Lit les données d'audience depuis le cache : répartition par âge, genre et
+        pays (% des impressions). Utilise cette tool pour répondre à des questions
+        sur « qui voit mes pubs ? » ou pour recommander un ciblage.
+
+        Args:
+            days: période en jours (7, 30, 90). Défaut 30.
+        """
+        from . import dashboard as _db
+        from .db import rpc_fb_breakdown
+        from datetime import date, timedelta
+        days = max(1, min(int(days), 90))
+        today = date.today()
+        start = (today - timedelta(days=days - 1)).isoformat()
+        end = today.isoformat()
+        try:
+            age_rows = rpc_fb_breakdown(ad_account_id, start, end, "age")
+            gender_rows = rpc_fb_breakdown(ad_account_id, start, end, "gender")
+            country_rows = rpc_fb_breakdown(ad_account_id, start, end, "country")
+        except Exception as e:
+            return f"❌ Impossible de récupérer les données audience : {e}"
+
+        def _fmt_rows(rows: list, label: str, key: str = "key1") -> str:
+            if not rows:
+                return f"  {label}: aucune donnée"
+            total = sum(int(r.get("impressions") or 0) for r in rows) or 1
+            parts = []
+            for r in sorted(rows, key=lambda x: int(x.get("impressions") or 0), reverse=True)[:8]:
+                imp = int(r.get("impressions") or 0)
+                pct = round(imp * 100 / total, 1)
+                parts.append(f"{r.get(key, '?')} ({pct}%)")
+            return f"  {label}: " + " | ".join(parts)
+
+        lines = [f"=== Audience ({days}j) ==="]
+        lines.append(_fmt_rows(age_rows, "Âge"))
+        lines.append(_fmt_rows(gender_rows, "Genre"))
+        lines.append(_fmt_rows(country_rows, "Pays"))
+        return "\n".join(lines)
+
+    @tool
+    def get_instagram_metrics(limit: int = 10) -> str:
+        """Lit les métriques Instagram depuis l'API Meta : profil (abonnés, publications)
+        et performances des derniers posts (portée, impressions, likes, commentaires).
+        Utilise cette tool pour répondre à des questions sur Instagram ou donner des
+        conseils de contenu basés sur les vrais résultats.
+
+        Args:
+            limit: nombre de posts à retourner (max 25). Défaut 10.
+        """
+        from . import meta_instagram as _ig
+        limit = max(1, min(int(limit), 25))
+        try:
+            data = _ig.get_overview(page_id, access_token, limit=limit)
+        except Exception as e:
+            return f"❌ Impossible de récupérer les données Instagram : {e}"
+        profile = data.get("profile") or {}
+        posts = data.get("posts") or []
+        lines = [
+            f"=== Compte Instagram ===",
+            f"@{profile.get('username', '?')} — {int(profile.get('followers_count', 0)):,} abonnés, {int(profile.get('media_count', 0))} publications",
+        ]
+        if not posts:
+            lines.append("Aucun post récent.")
+            return "\n".join(lines)
+        lines.append(f"\n=== Derniers {len(posts)} posts ===")
+        for p in posts:
+            kind = p.get("media_product_type") or p.get("media_type") or "?"
+            reach = p.get("reach")
+            impr = p.get("impressions")
+            likes = int(p.get("like_count") or 0)
+            comments = int(p.get("comments_count") or 0)
+            caption = (p.get("caption") or "").strip()[:80]
+            date_str = (p.get("timestamp") or "")[:10]
+            lines.append(
+                f"\n• [{kind}] {date_str}\n"
+                + (f"  Portée: {reach:,}" if reach is not None else "  Portée: —")
+                + (f" | Impressions: {impr:,}" if impr is not None else "")
+                + f" | Likes: {likes} | Commentaires: {comments}"
+                + (f"\n  {caption}…" if caption else "")
+            )
+        return "\n".join(lines)
+
+    @tool
+    def get_billing_overview() -> str:
+        """Lit les informations de paiement et de dépense du compte publicitaire :
+        moyen de paiement, solde dû, total dépensé, seuil de facturation, et
+        historique de dépense mensuel. Utilise cette tool pour répondre à des
+        questions sur le budget ou les factures.
+        """
+        from . import meta_pages as _mp
+        from . import dashboard as _db
+        try:
+            billing = _mp.account_billing(ad_account_id, access_token)
+            history = _db.monthly_spend(ad_account_id)
+        except Exception as e:
+            return f"❌ Impossible de récupérer la facturation : {e}"
+        lines = [
+            "=== Paiement & facturation ===",
+            f"- Moyen de paiement : {billing.get('payment_display') or billing.get('payment_type') or '—'}",
+            f"- Total dépensé : {float(billing.get('amount_spent') or 0):.2f}",
+            f"- Solde dû : {float(billing.get('balance') or 0):.2f}",
+            f"- Statut du compte : {billing.get('account_status') or '—'}",
+        ]
+        if billing.get("spend_cap"):
+            lines.append(f"- Seuil de dépense : {float(billing['spend_cap']):.2f}")
+        if history:
+            lines.append("\nHistorique mensuel (dépense réelle) :")
+            for m in history[-12:]:  # 12 derniers mois
+                lines.append(f"  {m.get('month', '?')} : {float(m.get('spend') or 0):.2f}")
+        return "\n".join(lines)
+
     tools = [
         create_full_campaign,
         upload_image,
@@ -539,6 +744,11 @@ def build_meta_tools(
         list_facebook_page_posts,
         post_to_facebook_page,
         get_facebook_page_insights,
+        get_dashboard_overview,
+        get_campaigns_performance,
+        get_audience_breakdown,
+        get_instagram_metrics,
+        get_billing_overview,
     ]
     return tools, _persist
 

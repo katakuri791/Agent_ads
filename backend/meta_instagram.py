@@ -167,3 +167,94 @@ def get_overview(page_id: str, user_token: str, limit: int = 24) -> dict[str, An
     }
     posts = list_ig_media(ig["id"], user_token, limit=limit)
     return {"profile": profile, "posts": posts}
+
+
+def publish_ig_now(
+    page_id: str,
+    access_token: str,
+    caption: str,
+    image_url: Optional[str] = None,
+    video_url: Optional[str] = None,
+) -> dict:
+    """Publie IMMÉDIATEMENT un post sur le compte Instagram Business lié à la Page.
+
+    L'API IG « Content Publishing » ne planifie pas : le flux est conteneur →
+    media_publish. La planification différée est gérée en amont (on stocke la
+    demande et ce helper est appelé à l'heure prévue par le job `ig_publish`).
+
+    Requiert le scope `instagram_content_publish`. L'URL doit être HTTPS publique
+    (pas de bytes directs). Une vidéo est publiée en Reel.
+
+    Retourne {"ok": True, "post_id": <id>}.
+    Lève GraphError (message clair) si IG non lié, URL invalide, ou échec d'encodage.
+    """
+    if not image_url and not video_url:
+        raise GraphError(
+            "Instagram nécessite une image ou une vidéo. "
+            "Fournis l'URL HTTPS publique de ton fichier."
+        )
+
+    ig = resolve_ig_account(page_id, access_token)
+    if not ig or not ig.get("id"):
+        scopes = list_token_scopes(access_token)
+        if scopes and "instagram_basic" not in scopes:
+            raise GraphError(MISSING_IG_SCOPE)
+        raise GraphError(NO_IG_LINKED if scopes else IG_UNKNOWN_CHECKLIST)
+
+    ig_user_id = ig["id"]
+
+    # Étape 1 : créer le conteneur média.
+    params: dict = {"access_token": access_token, "caption": caption or ""}
+    if video_url:
+        params["video_url"] = video_url
+        params["media_type"] = "REELS"
+    else:
+        params["image_url"] = image_url
+
+    resp = _check(requests.post(f"{GRAPH}/{ig_user_id}/media", data=params, timeout=60))
+    creation_id = resp.get("id")
+    if not creation_id:
+        raise GraphError(
+            "Instagram n'a pas retourné d'identifiant pour ce media. Vérifie l'URL fournie."
+        )
+
+    # Étape 1bis : une vidéo/Reel doit finir son encodage avant publication.
+    # On sonde le statut du conteneur (status_code : FINISHED/IN_PROGRESS/ERROR).
+    if video_url:
+        _wait_ig_container_ready(creation_id, access_token)
+
+    # Étape 2 : publier le conteneur.
+    pub = _check(requests.post(
+        f"{GRAPH}/{ig_user_id}/media_publish",
+        data={"access_token": access_token, "creation_id": creation_id},
+        timeout=TIMEOUT,
+    ))
+    return {"ok": True, "post_id": str(pub.get("id") or creation_id)}
+
+
+def _wait_ig_container_ready(
+    creation_id: str, access_token: str, attempts: int = 20, delay: float = 6.0
+) -> None:
+    """Attend qu'un conteneur média IG soit FINISHED avant `media_publish`.
+    Bloquant (appelé dans un thread de fond). Lève GraphError si ERROR/EXPIRED
+    ou si l'encodage n'aboutit pas dans le temps imparti (~2 min)."""
+    import time as _time
+
+    for _ in range(attempts):
+        st = _check(requests.get(
+            f"{GRAPH}/{creation_id}",
+            params={"access_token": access_token, "fields": "status_code"},
+            timeout=TIMEOUT,
+        ))
+        code = (st.get("status_code") or "").upper()
+        if code == "FINISHED":
+            return
+        if code in ("ERROR", "EXPIRED"):
+            raise GraphError(
+                "Instagram n'a pas pu traiter la vidéo (encodage échoué). "
+                "Vérifie le format/durée du fichier."
+            )
+        _time.sleep(delay)
+    raise GraphError(
+        "La vidéo Instagram est encore en cours d'encodage. Réessaie dans un moment."
+    )
