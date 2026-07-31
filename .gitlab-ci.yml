@@ -128,7 +128,7 @@ deploy:
   stage: deploy
 
   tags:
-    - runner-vm.58
+    - tythonai.12
 
   only:
     - main
