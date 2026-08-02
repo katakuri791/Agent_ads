@@ -68,7 +68,14 @@ def list_notifications(user_id: str, limit: int = 20) -> dict:
         .eq("read", False)
         .execute()
     )
-    return {"items": res.data or [], "unread_count": count_res.count or 0}
+    # SmartDB/NocoDB peut renvoyer `read = null` (le DEFAULT false Postgres n'a pas
+    # suivi à la migration) → on force un vrai booléen, sinon le modèle Pydantic
+    # `NotificationOut.read: bool` lève un ValidationError (500 brut) à la
+    # sérialisation. Un null = jamais marqué lu = non lu.
+    items = res.data or []
+    for it in items:
+        it["read"] = bool(it.get("read"))
+    return {"items": items, "unread_count": count_res.count or 0}
 
 
 def mark_read(user_id: str, notification_id: str) -> None:
