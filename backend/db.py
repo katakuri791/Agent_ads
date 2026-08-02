@@ -214,6 +214,12 @@ def create_conversation(user_id: str, title: str = "Nouvelle conversation") -> s
 
 
 def get_conversation(conversation_id: str, user_id: str) -> Optional[dict]:
+    # Les id SmartDB/NocoDB sont des entiers auto (PK). Un id non numérique
+    # (ex. le placeholder "string" de Swagger) ne peut donc pas exister → on
+    # renvoie None ici plutôt que d'envoyer un filtre que NocoDB rejette (400),
+    # ce qui remonterait en 500 brut chez l'appelant (/chat, /conversations/…).
+    if not str(conversation_id).isdigit():
+        return None
     res = (
         supabase_admin.table("conversations")
         .select("*")
