@@ -4,7 +4,7 @@ stages:
   - deploy
 
 variables:
-  DOCKER_TLS_CERTDIR: ""
+  DOCKER_TLS_CERTDIR: ""  
 
   STATIC_TAG: "meta-ads-v1"
 
