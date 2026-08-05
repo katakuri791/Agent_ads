@@ -8,10 +8,19 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from backend.auth import get_current_user  # re-export (point d'import unique)
+from backend.auth import (  # re-export (point d'import unique)
+    get_current_user,
+    get_user_or_api_key,
+    get_user_or_public,
+)
 from backend.db import get_meta_account
 
-__all__ = ["get_current_user", "resolve_account"]
+__all__ = [
+    "get_current_user",
+    "get_user_or_api_key",
+    "get_user_or_public",
+    "resolve_account",
+]
 
 
 def resolve_account(

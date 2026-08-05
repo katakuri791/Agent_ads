@@ -30,6 +30,8 @@ from backend.db import (
 from backend.meta_tools import upload_image_bytes, upload_video_bytes
 from backend.ratelimit import check_rate_limit
 from backend.schemas import (
+    BotpressChatRequest,
+    BotpressChatResponse,
     CampaignCreated,
     CampaignQuestionnaire,
     ChatImageUploadResponse,
@@ -92,10 +94,17 @@ def campaign_questionnaire() -> CampaignQuestionnaire:
 
 
 def chat(body: ChatRequest, user: UserPublic) -> ChatResponse:
-    # Garde-fou anti-rafale (review §5.7) : borne les messages par utilisateur
-    # pour éviter qu'un agent en boucle ne sature /chat (et crée des campagnes
-    # en série). 30 messages / minute.
-    if not check_rate_limit(user.id, "chat", limit=30, window_s=60):
+    # Identité de l'appelant pour /chat public : si l'extérieur (Botpress) fournit
+    # un `user_id`, c'est LUI qui identifie la personne ; sinon on retombe sur
+    # l'utilisateur (démo fixe en public, ou l'utilisateur du JWT côté frontend).
+    # `tenant_id` sépare le rate-limit par personne ; le compte Meta, lui, reste
+    # celui de `user` (compte de démo partagé en public).
+    tenant_id = (body.user_id or "").strip() or str(user.id)
+
+    # Garde-fou anti-rafale (review §5.7) : borne les messages PAR PERSONNE
+    # (`tenant_id`) pour éviter qu'un agent en boucle ne sature /chat (et crée des
+    # campagnes en série). 30 messages / minute → chacun a son propre quota.
+    if not check_rate_limit(tenant_id, "chat", limit=30, window_s=60):
         raise HTTPException(
             status_code=429,
             detail="Trop de messages en peu de temps. Réessaie dans une minute.",
@@ -121,14 +130,23 @@ def chat(body: ChatRequest, user: UserPublic) -> ChatResponse:
             f"[Image jointe par l'utilisateur — image_hash={body.attached_image_hash}]\n\n"
             + user_message
         )
+    # Chat public : on signale à l'agent l'identité de la personne qui parle
+    # (le `user_id` fourni par l'appelant externe) → il « sait qui parle ».
+    if body.user_id:
+        user_message = f"[Utilisateur : {body.user_id}]\n\n" + user_message
 
     history = load_messages(conversation_id)
+    user_meta: dict = {}
+    if body.attached_image_hash:
+        user_meta["image_hash"] = body.attached_image_hash
+    if body.user_id:
+        user_meta["user_id"] = body.user_id
     save_message(
         conversation_id,
         user.id,
         "user",
         body.message,
-        {"image_hash": body.attached_image_hash} if body.attached_image_hash else {},
+        user_meta,
     )
 
     # Court-circuit déterministe : si l'utilisateur veut créer une campagne (et
@@ -295,4 +313,62 @@ def chat(body: ChatRequest, user: UserPublic) -> ChatResponse:
         reply=reply,
         tool_calls=[ToolCallInfo(**tc) for tc in tool_calls_raw],
         structured=structured,
+    )
+
+
+def _chat_response_to_botpress(resp: ChatResponse) -> list[dict]:
+    """Traduit notre ChatResponse en messages Botpress (`responses[]`).
+
+    - `reply` (texte) → un message `text`.
+    - un `structured` de type questionnaire → un `single-choice` par question
+      qui a des options (les questions libres restent portées par le texte).
+    - une campagne créée → une `card` mettant en avant le statut PAUSED.
+    Les autres `structured` (brief, insight) sont déjà résumés dans `reply`.
+    """
+    out: list[dict] = []
+    if resp.reply:
+        out.append({"type": "text", "text": resp.reply})
+
+    structured = resp.structured
+    kind = getattr(structured, "kind", None)
+    if kind == "campaign_questionnaire":
+        for q in structured.questions:
+            if q.options:
+                out.append(
+                    {
+                        "type": "single-choice",
+                        "text": q.label,
+                        "title": structured.title,
+                        "choices": [
+                            {"title": o.label, "value": o.value} for o in q.options
+                        ],
+                    }
+                )
+    elif kind == "campaign_created":
+        out.append(
+            {
+                "type": "card",
+                "title": structured.name,
+                "subtitle": f"Campagne créée — {structured.status} (aucune dépense)",
+                "actions": [],
+            }
+        )
+    return out
+
+
+def chat_botpress(body: BotpressChatRequest, user: UserPublic) -> BotpressChatResponse:
+    """Point d'entrée Botpress : accepte le format `input.txt` (type/text/bot_Id/
+    payload) et renvoie le tableau `responses` Botpress. Sous le capot, on mappe
+    vers ChatRequest et on réutilise toute la logique de l'agent (`chat`)."""
+    payload = body.payload
+    req = ChatRequest(
+        message=body.text,
+        conversation_id=payload.conversation_id or None,
+        account_id=body.bot_Id or None,  # bot_Id = account_id (compte Meta)
+        user_id=payload.user_id or None,
+    )
+    resp = chat(req, user)
+    return BotpressChatResponse(
+        conversation_id=resp.conversation_id,
+        responses=_chat_response_to_botpress(resp),
     )
