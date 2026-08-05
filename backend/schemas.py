@@ -1,6 +1,6 @@
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, EmailStr, Field, model_validator
 
 
 class SignupRequest(BaseModel):
@@ -221,11 +221,69 @@ StructuredOutput = Union[
 
 
 class ChatRequest(BaseModel):
-    message: str
+    # `/chat` accepte deux formats sur le MÊME body :
+    #  • frontend      → `message` (+ `account_id`)
+    #  • Botpress/plat → `text` (= message) et `bot_id`/`bot_Id` (= account_id)
+    # Le validateur ci-dessous replie `text→message` et `bot_id→account_id`
+    # quand le champ principal est absent, donc `/chat` fonctionne tel quel avec
+    # l'entrée `input.txt` (text, bot_id, user_id, conversation_id).
+    model_config = {"populate_by_name": True}
+
+    message: Optional[str] = None
+    text: Optional[str] = None  # alias Botpress de `message`
     conversation_id: Optional[str] = None
     attached_image_hash: Optional[str] = None
     attached_image_url: Optional[str] = None
     account_id: Optional[str] = None
+    # `bot_id` (= account_id, compte Meta ciblé). Accepte aussi la casse Botpress
+    # `bot_Id` de input.txt. Vide → compte par défaut de l'utilisateur.
+    bot_id: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("bot_id", "bot_Id")
+    )
+    # Identité de l'appelant pour /chat public (ex. user_id tybotflow / Botpress).
+    # Sert à séparer le rate-limit par personne et à tracer qui parle à l'agent.
+    # Optionnel : absent → on retombe sur l'utilisateur de démo fixe.
+    user_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _accept_botpress_aliases(self) -> "ChatRequest":
+        if not (self.message or "").strip() and (self.text or "").strip():
+            self.message = self.text
+        if not (self.account_id or "").strip() and (self.bot_id or "").strip():
+            self.account_id = self.bot_id
+        if not (self.message or "").strip():
+            raise ValueError("`message` (ou `text`) est requis.")
+        return self
+
+
+# ─── Botpress (format d'entrée/sortie de l'intégration externe) ───────────────
+# Botpress envoie le message au format `input.txt` (type/text/bot_Id/payload) et
+# attend en retour un tableau `responses` (voir « Botpress responses.docx »). On
+# mappe ici ce format sur nos ChatRequest/ChatResponse internes sans toucher au
+# `/chat` du frontend.
+
+
+class BotpressPayload(BaseModel):
+    user_id: Optional[str] = None          # identité de la personne qui parle
+    conversation_id: Optional[str] = None  # fil de discussion (vide → nouveau)
+    channel: str = "web"                   # toujours "web" côté Botpress (ignoré)
+
+
+class BotpressChatRequest(BaseModel):
+    # `text` = le message ; `bot_Id` = l'account_id (compte Meta ciblé, vide →
+    # compte par défaut) ; `payload.user_id`/`conversation_id` = identité + fil.
+    type: str = "text"
+    text: str
+    bot_Id: Optional[str] = None
+    payload: BotpressPayload = Field(default_factory=BotpressPayload)
+
+
+class BotpressChatResponse(BaseModel):
+    # `responses` = liste hétérogène de messages Botpress (text / single-choice /
+    # card…). On renvoie aussi `conversation_id` pour que Botpress le repasse au
+    # prochain tour (continuité du fil).
+    conversation_id: str
+    responses: list[dict[str, Any]] = []
 
 
 class ToolCallInfo(BaseModel):
