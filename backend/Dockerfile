@@ -6,6 +6,7 @@ COPY pyproject.toml .
 COPY uv.lock* .
 
 COPY backend ./backend
+COPY api ./api
 COPY main.py .
 
 RUN pip install --no-cache-dir uv
