@@ -28,6 +28,10 @@ export function setRefreshToken(token: string) {
   localStorage.setItem(REFRESH_KEY, token);
 }
 
+export function clearRefreshToken() {
+  localStorage.removeItem(REFRESH_KEY);
+}
+
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(REFRESH_KEY);
