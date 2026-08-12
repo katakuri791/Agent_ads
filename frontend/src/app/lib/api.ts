@@ -1,4 +1,4 @@
-import { AuthUser, clearToken, getRefreshToken, getToken, setCachedUser, setRefreshToken, setToken } from "./auth";
+import { AuthUser, clearRefreshToken, clearToken, getRefreshToken, getToken, setCachedUser, setRefreshToken, setToken } from "./auth";
 
 // On retire tout `/` final : les chemins passés ci-dessous commencent déjà par
 // `/` (ex. `/auth/signup`). Sans ça, une VITE_API_URL finissant par `/` produit
@@ -636,7 +636,11 @@ export const api = {
       false,
     );
     setToken(data.access_token);
+    // Un login délégué (plateforme du client) ne renvoie PAS de refresh token. On
+    // efface alors celui d'une session précédente : sinon, au premier 401, le front
+    // rejouerait l'ancien refresh token et basculerait sur l'utilisateur d'avant.
     if (data.refresh_token) setRefreshToken(data.refresh_token);
+    else clearRefreshToken();
     setCachedUser(data.user);
     return data.user;
   },

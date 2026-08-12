@@ -43,7 +43,8 @@ def extract_identity(data: dict) -> dict:
     # Certaines APIs enveloppent la charge utile dans `data` / `result` / `user`.
     user = data.get("user") if isinstance(data.get("user"), dict) else {}
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
-    merged = {**data, **inner, **user}
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    merged = {**data, **inner, **result, **user}
 
     token = _first(merged, "token", "access_token", "accessToken", "jwt", "id_token")
     claims: dict = {}
@@ -55,10 +56,18 @@ def extract_identity(data: dict) -> dict:
         except Exception:  # noqa: BLE001 — token opaque / non-JWT : on ignore.
             claims = {}
 
+    # Nom complet : soit un champ direct, soit recomposé depuis prénom + nom
+    # séparés (cas très courant : firstName / lastName ou les claims OIDC).
+    full_name = _first(merged, "full_name", "fullName", "name")
+    if not full_name:
+        first = _first(merged, "first_name", "firstName", "given_name") or claims.get("given_name")
+        last = _first(merged, "last_name", "lastName", "family_name") or claims.get("family_name")
+        full_name = " ".join(p for p in [first, last] if p).strip() or None
+
     return {
         "email": _first(merged, "email") or claims.get("email"),
-        "full_name": _first(merged, "full_name", "fullName", "name"),
-        "remote_user_id": _first(merged, "id", "user_id", "userId") or claims.get("sub"),
+        "full_name": full_name or claims.get("name"),
+        "remote_user_id": _first(merged, "id", "user_id", "userId", "uid") or claims.get("sub"),
         "token": token,
     }
 
@@ -72,9 +81,12 @@ def client_login(email: str, password: str) -> dict:
         # Ne devrait pas arriver : l'appelant ne délègue que si l'URL est définie.
         raise HTTPException(status_code=500, detail="Client auth is not configured.")
 
+    # L'endpoint de login de tybotflow s'authentifie UNIQUEMENT via email+password
+    # dans le corps : il renvoie 200 sans aucun header `Authorization`. On n'attache
+    # donc JAMAIS de Bearer ici — un `CLIENT_AUTH_TOKEN` parasite (défini par erreur
+    # dans l'env de prod) ferait échouer le login en 401 alors que les identifiants
+    # sont bons. Le comportement ne dépend plus d'une variable d'env côté serveur.
     headers = {"accept": "application/json", "Content-Type": "application/json"}
-    if CLIENT_AUTH_TOKEN:
-        headers["Authorization"] = f"Bearer {CLIENT_AUTH_TOKEN}"
 
     try:
         resp = httpx.post(
@@ -86,6 +98,18 @@ def client_login(email: str, password: str) -> dict:
     except httpx.HTTPError as exc:
         logger.warning("Client auth unreachable: %s", exc)
         raise HTTPException(status_code=502, detail="Authentication service unavailable.")
+
+    # Log du résultat de l'appel au service d'auth client (pour debug). On tronque
+    # le corps et on ne loggue JAMAIS le mot de passe (il est dans la requête, pas
+    # dans la réponse). ⚠️ Niveau DEBUG volontairement : la réponse du client
+    # contient un token d'accès — il ne doit pas atterrir dans les logs de prod
+    # (niveau INFO). Passer le logger en DEBUG le temps d'un diagnostic.
+    logger.debug(
+        "Client auth POST %s -> %s | body: %s",
+        CLIENT_AUTH_URL,
+        resp.status_code,
+        resp.text[:1000],
+    )
 
     # Mauvais identifiants → on renvoie le MÊME message que le login local pour ne
     # rien divulguer (email inexistant vs mot de passe faux).
