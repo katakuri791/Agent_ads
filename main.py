@@ -26,6 +26,7 @@ from backend.db import (
 
 # ─── Routers feature-based ────────────────────────────────────────────────────
 from api.accounts.route import router as accounts_router
+from api.agent.route import router as agent_router
 from api.audiences.route import router as audiences_router
 from api.auth.route import router as auth_router
 from api.billing.route import router as billing_router
@@ -183,5 +184,6 @@ for _router in (
     sync_router,
     conversations_router,
     chat_router,
+    agent_router,
 ):
     app.include_router(_router)

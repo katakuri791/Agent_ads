@@ -20,6 +20,19 @@ from .schemas import (
 )
 
 
+# ─── Identité de l'agent ──────────────────────────────────────────────────────
+# La plateforme n'a qu'UN SEUL agent (voir build_agent) — reconstruit sans état à
+# chaque /chat. On lui donne ici un id stable pour pouvoir le référencer/retrouver
+# (endpoint GET /agent, Botpress, recherche). Ce n'est PAS le compte Meta (bot_Id
+# = account_id), c'est l'identité de l'agent lui-même.
+AGENT_ID = "Meta_ads"
+AGENT_NAME = "Meta Ads"
+AGENT_DESCRIPTION = (
+    "Assistant Meta Ads : crée et analyse des campagnes Facebook/Instagram "
+    "en langage naturel."
+)
+
+
 def clean_markdown(text: str) -> str:
     """Retire le formatage markdown gras/italique (** __ *) des réponses de
     l'agent — l'UI affiche du texte brut, les étoiles « ** » polluent le rendu."""
