@@ -24,6 +24,14 @@ class UserPublic(BaseModel):
     company: Optional[str] = None
 
 
+class AgentInfo(BaseModel):
+    """Identité de l'agent IA (un seul agent dans la plateforme)."""
+
+    id: str
+    name: str
+    description: str
+
+
 class UserUpdateRequest(BaseModel):
     full_name: Optional[str] = None
     first_name: Optional[str] = None
