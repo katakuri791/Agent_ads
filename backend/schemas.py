@@ -289,13 +289,21 @@ _PLACEHOLDER = "string"
 
 
 def _reject_placeholder(value: str, field: str) -> str:
+    # `min_length=1` de Pydantic compte les espaces : `" "` a une longueur de 1 et
+    # passe donc la contrainte. On rejette ici toute valeur VIDE une fois les espaces
+    # retirés (chaîne blanche = pas un vrai identifiant), et on renvoie la valeur
+    # NETTOYÉE (strip) pour qu'aucun espace parasite ne file en aval.
     v = value.strip()
+    if not v:
+        raise ValueError(
+            f"« {field} » ne peut pas être vide. Renseigne un {field} réel."
+        )
     if v.lower() == _PLACEHOLDER:
         raise ValueError(
             f"« {field} » doit être une vraie valeur, pas l'exemple « string ». "
             f"Renseigne un {field} réel."
         )
-    return value
+    return v
 
 
 class BotpressPayload(BaseModel):
