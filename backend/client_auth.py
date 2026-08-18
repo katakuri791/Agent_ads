@@ -1,17 +1,18 @@
 """Login délégué à la plateforme du client (tybotflow).
 
 Au lieu de vérifier email + mot de passe contre notre table `users`, on relaie la
-demande à l'endpoint de login du client (`CLIENT_AUTH_URL`). On ne s'appuie QUE
-sur le code de statut HTTP (2xx = ok, 401/400 = mauvais identifiants) : l'identité
-locale est ensuite rattachée par email côté `backend/auth.py`. On n'a donc pas
-besoin de connaître la forme exacte du corps de réponse du client.
+demande à l'endpoint de login du client (`CLIENT_AUTH_URL`). On s'appuie sur le
+code de statut HTTP (2xx = ok, 401/400 = mauvais identifiants) pour authentifier,
+puis on EXPLOITE le corps de réponse (cf. output.txt) pour récupérer le vrai
+`user_id` distant (`userData.id` = UUID tybotflow), le nom et l'email.
 
-Si un jour on veut exploiter le corps (nom complet, user_id distant…), tout est
-déjà parsé au mieux dans `extract_identity()` — il suffira d'ajuster les clés une
-fois qu'on aura vu une vraie réponse.
+`extract_identity()` parse ce corps de façon tolérante (plusieurs formes de clés
+possibles) ; `remote_user_id` sert désormais de clé de tenant côté `backend/auth.py`
+(cloisonnement des comptes Meta / conversations par personne).
 """
 
 import logging
+import time
 from typing import Any, Optional
 
 import httpx
@@ -41,10 +42,14 @@ def extract_identity(data: dict) -> dict:
     if not isinstance(data, dict):
         return {}
     # Certaines APIs enveloppent la charge utile dans `data` / `result` / `user`.
+    # ⚠️ tybotflow renvoie l'objet utilisateur sous la clé `userData` (cf.
+    # output.txt : `userData.id` = l'UUID réel de la personne) → on le fusionne
+    # AUSSI pour récupérer le vrai `remote_user_id` (et prénom/nom).
     user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    user_data = data.get("userData") if isinstance(data.get("userData"), dict) else {}
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     result = data.get("result") if isinstance(data.get("result"), dict) else {}
-    merged = {**data, **inner, **result, **user}
+    merged = {**data, **inner, **result, **user, **user_data}
 
     token = _first(merged, "token", "access_token", "accessToken", "jwt", "id_token")
     claims: dict = {}
@@ -88,15 +93,33 @@ def client_login(email: str, password: str) -> dict:
     # sont bons. Le comportement ne dépend plus d'une variable d'env côté serveur.
     headers = {"accept": "application/json", "Content-Type": "application/json"}
 
-    try:
-        resp = httpx.post(
-            CLIENT_AUTH_URL,
-            json={"email": email, "password": password},
-            headers=headers,
-            timeout=15.0,
-        )
-    except httpx.HTTPError as exc:
-        logger.warning("Client auth unreachable: %s", exc)
+    # Retry court (3 tentatives, backoff 0.5s puis 1s) : un blip réseau transitoire
+    # (DNS/TLS/connexion qui rate une fraction de seconde, ou tybotflow qui redémarre)
+    # ne doit pas renvoyer un 502 à l'utilisateur alors que ses identifiants sont bons.
+    # ⚠️ On ne retente QUE les erreurs de transport (httpx.HTTPError) : un 401 (mauvais
+    # mot de passe) n'est PAS une exception ici → jamais retenté.
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = httpx.post(
+                CLIENT_AUTH_URL,
+                json={"email": email, "password": password},
+                headers=headers,
+                timeout=15.0,
+            )
+            break
+        except httpx.HTTPError as exc:
+            # On loggue le TYPE d'erreur (ConnectError / ConnectTimeout / ReadTimeout…)
+            # → diagnostic immédiat si le 502 persiste après les 3 essais.
+            logger.warning(
+                "Client auth unreachable (try %d/3, %s): %s",
+                attempt + 1,
+                type(exc).__name__,
+                exc,
+            )
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+    if resp is None:
         raise HTTPException(status_code=502, detail="Authentication service unavailable.")
 
     # Log du résultat de l'appel au service d'auth client (pour debug). On tronque
@@ -131,4 +154,8 @@ def client_login(email: str, password: str) -> dict:
 
     identity = extract_identity(data)
     identity["email"] = identity.get("email") or email  # garanti non vide.
+    # On conserve le corps de réponse BRUT du client (tel quel) : `login()` le
+    # renverra à l'appelant dans `AuthResponse.client_response` (l'intégralité de
+    # l'output de l'endpoint /auth/login de tybotflow, pas seulement l'identité).
+    identity["raw"] = data if isinstance(data, dict) else {}
     return identity

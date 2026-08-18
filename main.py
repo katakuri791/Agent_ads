@@ -40,6 +40,7 @@ from api.notifications.route import router as notifications_router
 from api.pages.route import router as pages_router
 from api.scheduled_posts.route import router as scheduled_posts_router
 from api.search.route import router as search_router
+from api.sessions.route import router as sessions_router
 from api.settings.route import router as settings_router
 from api.sync.route import router as sync_router
 
@@ -183,6 +184,7 @@ for _router in (
     search_router,
     sync_router,
     conversations_router,
+    sessions_router,
     chat_router,
     agent_router,
 ):

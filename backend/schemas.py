@@ -1,6 +1,13 @@
 from typing import Any, Literal, Optional, Union
 
-from pydantic import AliasChoices, BaseModel, EmailStr, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class SignupRequest(BaseModel):
@@ -45,6 +52,10 @@ class AuthResponse(BaseModel):
     refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: UserPublic
+    # Login délégué (tybotflow) : on remonte TEL QUEL le corps de réponse de
+    # l'endpoint /auth/login du client (access_token, userData, …) pour que
+    # l'appelant dispose de toutes ses données. Vide (None) pour un login local.
+    client_response: Optional[dict[str, Any]] = None
 
 
 class RefreshRequest(BaseModel):
@@ -271,19 +282,47 @@ class ChatRequest(BaseModel):
 # `/chat` du frontend.
 
 
+# Valeur d'exemple pré-remplie par Swagger UI : si l'utilisateur teste l'endpoint
+# sans la remplacer, on la refuse avec un message clair plutôt que de laisser un
+# faux identifiant filer plus loin (compte Meta introuvable → erreur confuse).
+_PLACEHOLDER = "string"
+
+
+def _reject_placeholder(value: str, field: str) -> str:
+    v = value.strip()
+    if v.lower() == _PLACEHOLDER:
+        raise ValueError(
+            f"« {field} » doit être une vraie valeur, pas l'exemple « string ». "
+            f"Renseigne un {field} réel."
+        )
+    return value
+
+
 class BotpressPayload(BaseModel):
-    user_id: Optional[str] = None          # identité de la personne qui parle
-    conversation_id: Optional[str] = None  # fil de discussion (vide → nouveau)
+    # `user_id` = identité de la personne qui parle → OBLIGATOIRE (le fil est résolu
+    # à partir de lui, cf. chat_botpress). Non vide requis (min_length=1).
+    user_id: str = Field(..., min_length=1)
+    conversation_id: Optional[str] = None  # IGNORÉ (le fil vient du user_id)
     channel: str = "web"                   # toujours "web" côté Botpress (ignoré)
+
+    @field_validator("user_id")
+    @classmethod
+    def _no_placeholder_user_id(cls, v: str) -> str:
+        return _reject_placeholder(v, "user_id")
 
 
 class BotpressChatRequest(BaseModel):
-    # `text` = le message ; `bot_Id` = l'account_id (compte Meta ciblé, vide →
-    # compte par défaut) ; `payload.user_id`/`conversation_id` = identité + fil.
+    # `text` = le message ; `bot_Id` = l'account_id (compte Meta ciblé) → OBLIGATOIRE ;
+    # `payload.user_id` = identité (obligatoire). `payload.conversation_id` est ignoré.
     type: str = "text"
     text: str
-    bot_Id: Optional[str] = None
-    payload: BotpressPayload = Field(default_factory=BotpressPayload)
+    bot_Id: str = Field(..., min_length=1)
+    payload: BotpressPayload
+
+    @field_validator("bot_Id")
+    @classmethod
+    def _no_placeholder_bot_id(cls, v: str) -> str:
+        return _reject_placeholder(v, "bot_Id")
 
 
 class BotpressChatResponse(BaseModel):
@@ -320,6 +359,20 @@ class MessageOut(BaseModel):
     content: str
     created_at: str
     metadata: dict[str, Any] = {}
+
+
+# ─── Session (toute la discussion d'UNE conversation) ─────────────────────────
+# Une « session » = le fil complet d'une conversation : on fournit l'`id` de la
+# conversation et on récupère ses métadonnées + TOUS ses messages (la discussion
+# de bout en bout, dans l'ordre chronologique).
+
+
+class SessionOut(BaseModel):
+    conversation_id: str
+    title: Optional[str] = None
+    created_at: str
+    updated_at: Optional[str] = None
+    messages: list[MessageOut] = []
 
 
 # ─── Meta data read endpoints ────────────────────────────────────────────────

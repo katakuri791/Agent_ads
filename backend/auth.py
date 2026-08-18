@@ -24,18 +24,28 @@ logger = logging.getLogger("metainsight")
 
 bearer_scheme = HTTPBearer(auto_error=True)
 
-# Préfixe des ids d'utilisateurs authentifiés CHEZ LE CLIENT (login délégué).
 # `user.id` sert de clé de cloisonnement partout (meta_accounts, conversations,
-# notifications…) et nos users locaux ont des PK entières (1, 2, 3…) — comme la
-# plateforme du client. Sans préfixe, un utilisateur distant `id=5` hériterait des
-# comptes Meta et des conversations de notre user local `id=5`. Le préfixe met les
-# deux espaces d'identifiants dans des mondes séparés.
-DELEGATED_ID_PREFIX = "tyb:"
+# notifications…). Les utilisateurs du login délégué (tybotflow) sont identifiés
+# par leur `userData.id` = un UUID, alors que nos users locaux ont des PK entières
+# NocoDB (1, 2, 3…). Les deux espaces ne se recoupent donc JAMAIS (un UUID n'est
+# pas un entier) → on n'ajoute plus aucun préfixe : `user.id` porte l'id distant
+# tel quel. On distingue les deux mondes par la forme de l'id (numérique = local).
 
 
 def is_delegated_user(user_id: str) -> bool:
-    """True si l'id vient du login délégué (⇒ aucune ligne locale dans `users`)."""
-    return str(user_id).startswith(DELEGATED_ID_PREFIX)
+    """True si l'id vient du login délégué (⇒ aucune ligne locale dans `users`).
+    Nos users locaux ont une PK entière NocoDB ; tout id NON numérique (UUID
+    tybotflow, `user_id` externe) est un utilisateur délégué."""
+    return not str(user_id).strip().isdigit()
+
+
+def delegated_id(raw: str) -> str:
+    """Normalise l'identité d'un utilisateur distant (login délégué OU Botpress)
+    en clé de tenant. On renvoie l'id BRUT (sans préfixe) : c'est le `userData.id`
+    tybotflow au login, et le `user_id` fourni par l'appelant externe dans /chat &
+    /sessions → un même utilisateur tybotflow partage le MÊME fil, qu'il passe par
+    le dashboard ou par Botpress."""
+    return str(raw).strip()
 
 # Variantes non-bloquantes pour la dépendance mixte clé d'API / JWT : elles ne
 # lèvent pas si l'en-tête est absent, on décide nous-mêmes dans get_user_or_api_key.
@@ -315,7 +325,13 @@ def signup(email: str, password: str, full_name: Optional[str]) -> tuple[str, st
     return access, refresh, _user_row_to_public(row)
 
 
-def login(email: str, password: str) -> tuple[str, Optional[str], UserPublic]:
+def login(
+    email: str, password: str
+) -> tuple[str, Optional[str], UserPublic, Optional[dict]]:
+    """Renvoie (access_token, refresh_token, user, client_response).
+
+    `client_response` = le corps BRUT de l'endpoint /auth/login du client (login
+    délégué) ; None pour un login local."""
     # Login délégué : si l'URL du client est configurée, on authentifie chez lui
     # (tybotflow). Les utilisateurs vivent CHEZ tybotflow, pas dans SmartDB : on ne
     # cherche/crée donc AUCUNE ligne locale. Sinon, login 100 % local (historique).
@@ -325,17 +341,14 @@ def login(email: str, password: str) -> tuple[str, Optional[str], UserPublic]:
         identity = client_login(email, password)  # lève 401 si identifiants faux.
         # Identité issue de la réponse tybotflow (email, sub, nom), ré-encodée dans
         # NOTRE JWT auto-porté → get_current_user n'a plus besoin de SmartDB.
-        # Id PRÉFIXÉ (cf. DELEGATED_ID_PREFIX) : jamais de collision avec un id local.
         #
-        # ⚠️ Clé de tenant fixée sur l'EMAIL (normalisé), PAS sur remote_user_id :
-        # l'email est l'entrée du login → toujours présent et IDENTIQUE à chaque
-        # connexion. remote_user_id est optionnel et variable selon la forme de la
-        # réponse du client ; l'utiliser comme clé scinderait l'identité d'un même
-        # utilisateur entre deux logins (tyb:5 une fois, tyb:email l'autre) → ses
-        # comptes Meta et conversations sembleraient perdus. La normalisation
-        # (strip + lower) évite un split sur une simple différence de casse.
-        tenant_key = (email or identity["email"]).strip().lower()
-        user_id = f"{DELEGATED_ID_PREFIX}{tenant_key}"
+        # Clé de tenant = le VRAI `user_id` distant (`userData.id` = UUID tybotflow,
+        # cf. output.txt), SANS préfixe, toujours identique d'un login à l'autre.
+        # C'est aussi la même valeur que le `user_id` fourni par Botpress →
+        # dashboard et Botpress partagent le même fil. On retombe sur l'email
+        # (normalisé) seulement si la réponse du client ne portait pas d'id (défensif).
+        remote_id = identity.get("remote_user_id")
+        user_id = str(remote_id).strip() if remote_id else (email or identity["email"]).strip().lower()
         email_val = identity["email"]
         full_name = identity.get("full_name")
         public = UserPublic(id=str(user_id), email=email_val, full_name=full_name)
@@ -343,7 +356,7 @@ def login(email: str, password: str) -> tuple[str, Optional[str], UserPublic]:
         # Pas de refresh token pour un user délégué : sa rotation lirait la table
         # `users` (SmartDB) qui n'existe pas ici. La session dure JWT_EXPIRES_HOURS
         # puis re-login. (À brancher sur le refresh tybotflow plus tard si besoin.)
-        return access, None, public
+        return access, None, public, identity.get("raw")
 
     res = (
         supabase_admin.table("users")
@@ -359,7 +372,7 @@ def login(email: str, password: str) -> tuple[str, Optional[str], UserPublic]:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     access = create_jwt(row["id"])
     refresh = create_refresh_token(row["id"])
-    return access, refresh, _user_row_to_public(row)
+    return access, refresh, _user_row_to_public(row), None
 
 
 def _load_user(user_id: str) -> UserPublic:
