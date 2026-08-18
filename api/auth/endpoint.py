@@ -24,8 +24,13 @@ def signup(body: SignupRequest) -> AuthResponse:
 
 
 def login(body: LoginRequest) -> AuthResponse:
-    access, refresh, user = auth_login(body.email, body.password)
-    return AuthResponse(access_token=access, refresh_token=refresh, user=user)
+    access, refresh, user, client_response = auth_login(body.email, body.password)
+    return AuthResponse(
+        access_token=access,
+        refresh_token=refresh,
+        user=user,
+        client_response=client_response,
+    )
 
 
 def refresh(body: RefreshRequest) -> AuthResponse:

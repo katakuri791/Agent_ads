@@ -8,6 +8,7 @@ from facebook_business.exceptions import FacebookRequestError
 from fastapi import HTTPException, UploadFile
 
 from backend import notifications
+from backend.auth import delegated_id
 from backend.agent import (
     build_agent,
     build_campaign_questionnaire,
@@ -19,6 +20,7 @@ from backend.agent import (
 from backend.db import (
     create_conversation,
     get_conversation,
+    get_latest_conversation,
     get_meta_account,
     load_messages,
     log_tool_call,
@@ -97,9 +99,13 @@ def chat(body: ChatRequest, user: UserPublic) -> ChatResponse:
     # Identité de l'appelant pour /chat public : si l'extérieur (Botpress) fournit
     # un `user_id`, c'est LUI qui identifie la personne ; sinon on retombe sur
     # l'utilisateur (démo fixe en public, ou l'utilisateur du JWT côté frontend).
-    # `tenant_id` sépare le rate-limit par personne ; le compte Meta, lui, reste
-    # celui de `user` (compte de démo partagé en public).
-    tenant_id = (body.user_id or "").strip() or str(user.id)
+    # `tenant_id` = clé de cloisonnement des CONVERSATIONS + du rate-limit. C'est
+    # l'id BRUT de la personne (cf. delegated_id, sans préfixe) : le même que le
+    # login délégué émet dans le JWT (userData.id tybotflow) et que Botpress fournit
+    # → un utilisateur retrouve le MÊME fil qu'il passe par le dashboard ou par
+    # Botpress. Le compte Meta, lui, reste celui de `user` (démo partagé en public).
+    raw_uid = (body.user_id or "").strip()
+    tenant_id = delegated_id(raw_uid) if raw_uid else str(user.id)
 
     # Garde-fou anti-rafale (review §5.7) : borne les messages PAR PERSONNE
     # (`tenant_id`) pour éviter qu'un agent en boucle ne sature /chat (et crée des
@@ -114,13 +120,13 @@ def chat(body: ChatRequest, user: UserPublic) -> ChatResponse:
     settings = get_meta_account(user.id, body.account_id)
 
     if body.conversation_id:
-        conv = get_conversation(body.conversation_id, user.id)
+        conv = get_conversation(body.conversation_id, tenant_id)
         if not conv:
             raise HTTPException(status_code=404, detail="Conversation not found")
         conversation_id = body.conversation_id
     else:
         title = body.message[:60] + ("…" if len(body.message) > 60 else "")
-        conversation_id = create_conversation(user.id, title=title or "Nouvelle conversation")
+        conversation_id = create_conversation(tenant_id, title=title or "Nouvelle conversation")
 
     # If the user attached an image, prepend a system-style note so the agent
     # knows it can reuse the hash directly when creating a campaign.
@@ -359,11 +365,28 @@ def _chat_response_to_botpress(resp: ChatResponse) -> list[dict]:
 def chat_botpress(body: BotpressChatRequest, user: UserPublic) -> BotpressChatResponse:
     """Point d'entrée Botpress : accepte le format `input.txt` (type/text/bot_Id/
     payload) et renvoie le tableau `responses` Botpress. Sous le capot, on mappe
-    vers ChatRequest et on réutilise toute la logique de l'agent (`chat`)."""
+    vers ChatRequest et on réutilise toute la logique de l'agent (`chat`).
+
+    ⚠️ Le fil est résolu à partir du `user_id` (l'identité fournie par l'appelant),
+    PAS d'un `conversation_id` que Botpress devrait tracer : on retrouve la dernière
+    conversation de cette personne pour la continuer, ou on en crée une au 1er
+    message. `payload.conversation_id` est donc IGNORÉ."""
     payload = body.payload
+    raw_uid = (payload.user_id or "").strip()
+
+    # Find-or-create : « cet utilisateur a-t-il déjà parlé à l'agent ? ». On cherche
+    # son fil le plus récent sous sa clé de tenant = son `user_id` BRUT (la même que
+    # le login délégué et que /chat). Trouvé → on le continue ; sinon `chat()` en
+    # créera un nouveau (conversation_id laissé à None).
+    conv_id: Optional[str] = None
+    if raw_uid:
+        existing = get_latest_conversation(delegated_id(raw_uid))
+        if existing:
+            conv_id = existing["id"]
+
     req = ChatRequest(
         message=body.text,
-        conversation_id=payload.conversation_id or None,
+        conversation_id=conv_id,
         account_id=body.bot_Id or None,  # bot_Id = account_id (compte Meta)
         user_id=payload.user_id or None,
     )

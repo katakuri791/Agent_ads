@@ -204,6 +204,21 @@ def list_conversations(user_id: str) -> list[dict]:
     return res.data or []
 
 
+def get_latest_conversation(user_id: str) -> Optional[dict]:
+    """Renvoie la conversation la plus récente de l'utilisateur (ou None). Sert au
+    canal Botpress : l'appelant ne fournit qu'un `user_id` → on retrouve son fil en
+    cours pour le continuer, sans qu'il ait à tracer un `conversation_id`."""
+    res = (
+        supabase_admin.table("conversations")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
 def create_conversation(user_id: str, title: str = "Nouvelle conversation") -> str:
     res = (
         supabase_admin.table("conversations")
@@ -225,6 +240,23 @@ def get_conversation(conversation_id: str, user_id: str) -> Optional[dict]:
         .select("*")
         .eq("id", conversation_id)
         .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def get_conversation_by_id(conversation_id: str) -> Optional[dict]:
+    """Charge une conversation par son seul `id` (sans filtre `user_id`). Sert la
+    route /sessions : l'id de la conversation fait office de handle → on renvoie le
+    fil demandé. Garde le même filet que get_conversation : un id non numérique ne
+    peut pas exister côté NocoDB (PK entière) → None plutôt qu'un 400 brut."""
+    if not str(conversation_id).isdigit():
+        return None
+    res = (
+        supabase_admin.table("conversations")
+        .select("*")
+        .eq("id", conversation_id)
         .limit(1)
         .execute()
     )
