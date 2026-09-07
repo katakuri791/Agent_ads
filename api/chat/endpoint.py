@@ -363,7 +363,7 @@ def _chat_response_to_botpress(resp: ChatResponse) -> list[dict]:
 
 
 def chat_botpress(body: BotpressChatRequest, user: UserPublic) -> BotpressChatResponse:
-    """Point d'entrée Botpress : accepte le format `input.txt` (type/text/bot_Id/
+    """Point d'entrée Botpress : accepte le format `input.txt` (type/text/bot_id/
     payload) et renvoie le tableau `responses` Botpress. Sous le capot, on mappe
     vers ChatRequest et on réutilise toute la logique de l'agent (`chat`).
 
@@ -387,7 +387,7 @@ def chat_botpress(body: BotpressChatRequest, user: UserPublic) -> BotpressChatRe
     req = ChatRequest(
         message=body.text,
         conversation_id=conv_id,
-        account_id=body.bot_Id or None,  # bot_Id = account_id (compte Meta)
+        account_id=body.bot_id or None,  # bot_id = account_id (compte Meta)
         user_id=payload.user_id or None,
     )
     resp = chat(req, user)

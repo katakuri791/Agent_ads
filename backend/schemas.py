@@ -320,17 +320,37 @@ class BotpressPayload(BaseModel):
 
 
 class BotpressChatRequest(BaseModel):
-    # `text` = le message ; `bot_Id` = l'account_id (compte Meta ciblé) → OBLIGATOIRE ;
+    # `text` = le message ; `bot_id` = l'account_id (compte Meta ciblé) → OBLIGATOIRE ;
     # `payload.user_id` = identité (obligatoire). `payload.conversation_id` est ignoré.
     type: str = "text"
-    text: str
-    bot_Id: str = Field(..., min_length=1)
+    # `text` = le message. Vide ou blanc (« », «   ») → refusé ICI : sans ça,
+    # ChatRequest lève plus bas un ValidationError NON attrapé → HTTP 500 brut.
+    # On ne refuse PAS l'exemple « string » comme pour les identifiants : un
+    # message peut légitimement contenir n'importe quel mot.
+    text: str = Field(..., min_length=1)
+    # On accepte les DEUX casses : `bot_id` (minuscule, notre format) et `bot_Id`
+    # (la casse historique de Botpress dans input.txt) — même choix que ChatRequest,
+    # pour qu'aucun appelant existant ne casse.
+    bot_id: str = Field(
+        ..., min_length=1, validation_alias=AliasChoices("bot_id", "bot_Id")
+    )
     payload: BotpressPayload
 
-    @field_validator("bot_Id")
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, v: str) -> str:
+        # Même règle que `_reject_placeholder` pour le vide : `min_length=1`
+        # compte les espaces, donc «   » passerait la contrainte Pydantic.
+        if not v.strip():
+            raise ValueError(
+                "« text » ne peut pas être vide. Écris un message."
+            )
+        return v
+
+    @field_validator("bot_id")
     @classmethod
     def _no_placeholder_bot_id(cls, v: str) -> str:
-        return _reject_placeholder(v, "bot_Id")
+        return _reject_placeholder(v, "bot_id")
 
 
 class BotpressChatResponse(BaseModel):
