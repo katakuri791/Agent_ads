@@ -324,13 +324,13 @@ class BotpressChatRequest(BaseModel):
     # `payload.user_id` = identité (obligatoire). `payload.conversation_id` est ignoré.
     type: str = "text"
     text: str
-    bot_Id: str = Field(..., min_length=1)
+    bot_id: str = Field(..., min_length=1)
     payload: BotpressPayload
 
-    @field_validator("bot_Id")
+    @field_validator("bot_id")
     @classmethod
     def _no_placeholder_bot_id(cls, v: str) -> str:
-        return _reject_placeholder(v, "bot_Id")
+        return _reject_placeholder(v, "bot_id")
 
 
 class BotpressChatResponse(BaseModel):
