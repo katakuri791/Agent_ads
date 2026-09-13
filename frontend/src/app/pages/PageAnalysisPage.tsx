@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Lock, ChevronDown, ExternalLink, Image as ImageIcon, Link2, X, ImagePlus, Film, Send, Loader2, PenSquare, ZoomIn } from "lucide-react";
+import { Lock, ChevronDown, ExternalLink, Image as ImageIcon, Link2, X, ImagePlus, Film, Send, Loader2, PenSquare, PlayCircle } from "lucide-react";
 import { api, ApiError, type PagePost } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { fmtNum, fmtDateTimeFull } from "../lib/format";
@@ -18,8 +18,8 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
   const toast = useToast();
   const qc = useQueryClient();
 
-  // Lightbox : image agrandie au clic sur une vignette de post.
-  const [lightbox, setLightbox] = useState<string | null>(null);
+  // Lecteur de post : ouvre le post complet (photo OU vidéo + texte) au clic.
+  const [viewPost, setViewPost] = useState<PagePost | null>(null);
   // Composer : modal de publication d'un nouveau post.
   const [composerOpen, setComposerOpen] = useState(false);
 
@@ -165,12 +165,13 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
               return (
                 <div key={p.id} className="ms-fade-up" style={{ animationDelay: `${i * 70}ms`, background: "var(--surf-2)", border: "1px solid var(--bd)", borderRadius: 10, overflow: "hidden", display: "flex", flexDirection: "column" }}>
                   <div style={{ position: "relative" }}>
-                    {p.full_picture ? (
-                      <button onClick={() => setLightbox(p.full_picture!)} title="Agrandir l'image" className="ms-thumb" style={{ display: "block", width: "100%", height: 120, padding: 0, border: "none", cursor: "zoom-in", background: "none", position: "relative" }}>
-                        <img src={p.full_picture} alt="" style={{ width: "100%", height: 120, objectFit: "cover", display: "block" }} />
-                        <span className="ms-thumb-zoom" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(6,13,31,.45)", color: "#fff", opacity: 0, transition: "opacity 160ms ease" }}><ZoomIn size={22} /></span>
-                      </button>
-                    ) : <Placeholder height={120} radius={0} />}
+                    <button onClick={() => setViewPost(p)} title="Ouvrir le post" className="ms-thumb" style={{ display: "block", width: "100%", height: 120, padding: 0, border: "none", cursor: "pointer", background: "none", position: "relative" }}>
+                      {p.full_picture
+                        ? <img src={p.full_picture} alt="" style={{ width: "100%", height: 120, objectFit: "cover", display: "block" }} />
+                        : <Placeholder height={120} radius={0} />}
+                      <span className="ms-thumb-zoom" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(6,13,31,.45)", color: "#fff", opacity: 0, transition: "opacity 160ms ease" }}><PlayCircle size={26} /></span>
+                      {p.media_type === "video" && <span style={{ position: "absolute", bottom: 8, right: 8, display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(6,13,31,.72)", color: "#fff", fontSize: 10.5, fontWeight: 600, borderRadius: 6, padding: "2px 7px", pointerEvents: "none" }}><Film size={12} /> Vidéo</span>}
+                    </button>
                     <span style={{ position: "absolute", top: 8, left: 8, background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 700, fontFamily: "JetBrains Mono", borderRadius: 6, padding: "2px 7px", pointerEvents: "none" }}>#{i + 1}</span>
                   </div>
                   <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
@@ -219,10 +220,13 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
               {sortedPosts.map((p, i) => {
                 const eng = p.reactions + p.comments + p.shares;
                 return (
-                  <div key={p.id} className="ms-trow" style={{ display: "grid", gridTemplateColumns: POST_GRID, gap: 10, alignItems: "center", padding: "12px 20px", borderBottom: i < sortedPosts.length - 1 ? "1px solid var(--bd-weak)" : "none" }}>
-                    {p.full_picture ? <img src={p.full_picture} alt="" onClick={() => setLightbox(p.full_picture!)} title="Agrandir l'image" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover", cursor: "zoom-in" }} /> : <Placeholder w={40} height={40} />}
+                  <div key={p.id} className="ms-trow" onClick={() => setViewPost(p)} title="Ouvrir le post" style={{ display: "grid", gridTemplateColumns: POST_GRID, gap: 10, alignItems: "center", padding: "12px 20px", borderBottom: i < sortedPosts.length - 1 ? "1px solid var(--bd-weak)" : "none", cursor: "pointer" }}>
+                    <div style={{ position: "relative", width: 40, height: 40 }}>
+                      {p.full_picture ? <img src={p.full_picture} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover", display: "block" }} /> : <Placeholder w={40} height={40} />}
+                      {p.media_type === "video" && <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(6,13,31,.4)", color: "#fff", borderRadius: 6 }}><PlayCircle size={18} /></span>}
+                    </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                      <span style={{ color: p.permalink_url ? "var(--accent)" : "var(--tx-dim)", display: "inline-flex", flexShrink: 0 }}>{p.full_picture ? <ImageIcon size={15} /> : <Link2 size={15} />}</span>
+                      <span style={{ color: p.permalink_url ? "var(--accent)" : "var(--tx-dim)", display: "inline-flex", flexShrink: 0 }}>{p.media_type === "video" ? <Film size={15} /> : p.full_picture ? <ImageIcon size={15} /> : <Link2 size={15} />}</span>
                       <span style={{ fontSize: 13.5, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.message || "(no text)"}</span>
                     </div>
                     {[p.reactions, p.comments, p.shares].map((v, k) => <span key={k} style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontSize: 12.5, color: k === 0 ? "var(--tx-2)" : "var(--tx-3)" }}>{engCell(v)}</span>)}
@@ -236,7 +240,7 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
         })()}
       </Card>
 
-      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+      {viewPost && <PostViewer post={viewPost} engagementBlocked={engagementBlocked} onClose={() => setViewPost(null)} />}
       {composerOpen && (
         <PostComposer
           accountId={selectedAccountId}
@@ -253,17 +257,59 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
   );
 }
 
-// Image agrandie plein écran — clic sur l'arrière-plan ou Échap pour fermer.
-function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
+// Lecteur de post plein écran : lit le post tel qu'il est — vidéo jouable si la
+// source (mp4) est fournie par Meta, sinon photo pleine résolution, avec le texte,
+// l'engagement et un lien vers Facebook. Clic sur l'arrière-plan ou Échap = fermer.
+function PostViewer({ post, engagementBlocked, onClose }: { post: PagePost; engagementBlocked: boolean; onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const isVideo = post.media_type === "video";
+  const videoSrc = isVideo ? post.media_url : null;
+  const imageSrc = post.full_picture || (!isVideo ? post.media_url : null);
+  const eng = post.reactions + post.comments + post.shares;
+  const engCell = (n: number) => (engagementBlocked ? "—" : fmtNum(n));
+
   return (
-    <div onClick={onClose} className="ms-fade-up" style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(6,13,31,.85)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 32, cursor: "zoom-out" }}>
-      <button onClick={onClose} title="Fermer" style={{ position: "absolute", top: 20, right: 20, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 999, border: "1px solid #2A2F3A", background: "var(--surf-pop)", color: "var(--tx-bright)", cursor: "pointer" }}><X size={20} /></button>
-      <img src={src} alt="" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 12, boxShadow: "0 24px 80px rgba(0,0,0,.6)", cursor: "default" }} />
+    <div onClick={onClose} className="ms-fade-up" style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(6,13,31,.85)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 32 }}>
+      <button onClick={onClose} title="Fermer" style={{ position: "absolute", top: 20, right: 20, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 999, border: "1px solid #2A2F3A", background: "var(--surf-pop)", color: "var(--tx-bright)", cursor: "pointer", zIndex: 2 }}><X size={20} /></button>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 560, maxHeight: "90vh", overflow: "auto", background: "var(--surf-2)", border: "1px solid var(--bd)", borderRadius: 14, boxShadow: "0 24px 80px rgba(0,0,0,.6)" }}>
+        <div style={{ background: "#000", display: "flex", alignItems: "center", justifyContent: "center", maxHeight: "56vh", overflow: "hidden" }}>
+          {videoSrc ? (
+            <video src={videoSrc} controls autoPlay playsInline style={{ width: "100%", maxHeight: "56vh", display: "block", background: "#000" }} />
+          ) : imageSrc ? (
+            <img src={imageSrc} alt="" style={{ width: "100%", maxHeight: "56vh", objectFit: "contain", display: "block" }} />
+          ) : (
+            <div style={{ padding: 40, color: "var(--tx-dim)", fontSize: 13, textAlign: "center" }}>
+              {isVideo ? "Aperçu vidéo indisponible — ouvre le post sur Facebook pour le lire." : "Ce post ne contient pas de média."}
+            </div>
+          )}
+        </div>
+        <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
+          {post.message
+            ? <div style={{ fontSize: 14, color: "var(--tx)", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{post.message}</div>
+            : <div style={{ fontSize: 13, color: "var(--tx-dim)", fontStyle: "italic" }}>(sans texte)</div>}
+          {!engagementBlocked && (
+            <div style={{ display: "flex", gap: 20, fontSize: 12.5, fontFamily: "JetBrains Mono", color: "var(--tx-3)" }}>
+              <span>💙 {engCell(post.reactions)}</span>
+              <span>💬 {engCell(post.comments)}</span>
+              <span>🔁 {engCell(post.shares)}</span>
+              <span style={{ color: "#22C55E" }}>Σ {engCell(eng)}</span>
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, borderTop: "1px solid var(--bd)", paddingTop: 12 }}>
+            <span style={{ fontSize: 11.5, color: "var(--tx-dim)", fontFamily: "JetBrains Mono" }}>{fmtDateTimeFull(post.created_time)}</span>
+            {post.permalink_url && (
+              <a href={post.permalink_url} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--accent)", fontWeight: 500 }}>
+                Voir sur Facebook <ExternalLink size={13} />
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -3,8 +3,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Plus, X, RefreshCw, Trash2, Send, Clock,
   Calendar as CalendarIcon, Image as ImageIcon, Film, Link2, FileText, Loader2, Lock,
+  LayoutGrid, TrendingUp, Facebook, Instagram,
 } from "lucide-react";
-import { api, ApiError, type ScheduledPost, type ScheduledPostType } from "../lib/api";
+import { api, ApiError, type ScheduledPost, type ScheduledPostType, type PageBestTimes } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { Card, Tabs, MSButton, SlidePanel, LoadingOverlay } from "../components/ms/primitives";
 import { ConnectPrompt, ErrorState } from "../components/shared/states";
@@ -55,7 +56,7 @@ function PostChip({ post, onClick, compact }: { post: SchedPost; onClick: (p: Sc
     <button onClick={(e) => { e.stopPropagation(); onClick(post); }}
       className={"ms-sched-chip" + (past ? " ms-sched-past" : "")}
       title={past ? "Déjà publié · cliquer pour voir le détail" : undefined}
-      style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: compact ? "3px 7px" : "5px 8px", borderRadius: 8, background: col + "18", border: "1px solid " + col + "40", borderLeft: "3px solid " + col, color: "var(--tx)", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: compact ? 10.5 : 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+      style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: compact ? "3px 7px" : "5px 8px", borderRadius: 8, background: col + "18", border: "1px solid " + col + "40", color: "var(--tx)", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: compact ? 10.5 : 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
       <span style={{ color: col, display: "inline-flex", flexShrink: 0 }}><TypeIcon type={post.type} size={compact ? 10 : 12} /></span>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{post.message || TYPE_LABEL[post.type]}</span>
     </button>
@@ -183,7 +184,7 @@ function DayView({ cursor, posts, today, onCellClick, onPostClick }: {
                 <div key={p.id} onClick={(e) => { e.stopPropagation(); onPostClick(p); }}
                   className={"ms-sched-day-event" + (isPast(p) ? " ms-sched-past" : "")}
                   title={isPast(p) ? "Déjà publié · cliquer pour voir le détail" : undefined}
-                  style={{ position: "absolute", top, left: 12, right: 12, padding: "10px 12px", background: TYPE_COLOR[p.type] + "20", border: "1px solid " + TYPE_COLOR[p.type] + "50", borderLeft: "3px solid " + TYPE_COLOR[p.type], borderRadius: 12, cursor: "pointer" }}>
+                  style={{ position: "absolute", top, left: 12, right: 12, padding: "10px 12px", background: TYPE_COLOR[p.type] + "20", border: "1px solid " + TYPE_COLOR[p.type] + "50", borderRadius: 12, cursor: "pointer" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ color: TYPE_COLOR[p.type], display: "inline-flex" }}><TypeIcon type={p.type} size={13} /></span>
                     <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)" }}>{fmtTime(p.when)}</span>
@@ -222,15 +223,115 @@ function DayView({ cursor, posts, today, onCellClick, onPostClick }: {
   );
 }
 
+// ─── Vue Bibliothèque (dossier de tous les posts) ───────────────
+function LibraryView({ posts, onPostClick }: { posts: SchedPost[]; onPostClick: (p: SchedPost) => void }) {
+  // Tous les posts, les plus récents/à venir d'abord (planifiés avant publiés).
+  const sorted = [...posts].sort((a, b) => +b.when - +a.when);
+  if (sorted.length === 0) {
+    return (
+      <div style={{ background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 16, padding: 48, textAlign: "center", color: "var(--tx-dim)", fontSize: 13.5 }}>
+        Aucun post pour l'instant. Clique « Planifier » pour en ajouter un.
+      </div>
+    );
+  }
+  return (
+    <div className="sched-library" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 14 }}>
+      {sorted.map((p) => {
+        const col = TYPE_COLOR[p.type] || "#1877F2";
+        const past = isPast(p);
+        const statusCol = p.status === "published" ? "#22C55E" : "#F59E0B";
+        return (
+          <button key={p.id} onClick={() => onPostClick(p)}
+            className={"ms-card ms-lib-card" + (past ? " ms-sched-past" : "")}
+            title={past ? "Déjà publié · cliquer pour voir le détail" : "Cliquer pour voir le détail"}
+            style={{ display: "flex", flexDirection: "column", textAlign: "left", padding: 0, overflow: "hidden", background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 14, cursor: "pointer" }}>
+            <div style={{ position: "relative", height: 110, background: p.full_picture ? "#000" : `repeating-linear-gradient(45deg, var(--surf-inset), var(--surf-inset) 8px, var(--surf-2) 8px, var(--surf-2) 16px)`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              {p.full_picture
+                ? <img src={p.full_picture} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                : <span style={{ color: col, display: "inline-flex", opacity: 0.6 }}><TypeIcon type={p.type} size={30} /></span>}
+              <span style={{ position: "absolute", top: 8, left: 8, display: "inline-flex", alignItems: "center", gap: 4, background: col + "E6", color: "#fff", fontSize: 10, fontWeight: 600, borderRadius: 6, padding: "2px 7px" }}><TypeIcon type={p.type} size={10} /> {TYPE_LABEL[p.type]}</span>
+              <span style={{ position: "absolute", top: 8, right: 8, display: "inline-flex", alignItems: "center", gap: 4, background: statusCol + "E6", color: "#fff", fontSize: 9.5, fontWeight: 600, borderRadius: 999, padding: "2px 7px" }}>{p.status === "published" ? "Publié" : "Planifié"}</span>
+            </div>
+            <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: "var(--tx)", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", minHeight: 34 }}>{p.message || <span style={{ color: "var(--tx-dim)" }}>({TYPE_LABEL[p.type]})</span>}</div>
+              <div style={{ marginTop: "auto", fontSize: 11, color: "var(--tx-dim)", fontFamily: "JetBrains Mono", display: "flex", alignItems: "center", gap: 6 }}>
+                <CalendarIcon size={11} /> {p.when.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })} · {fmtTime(p.when)}
+              </div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Panneau « meilleur moment de publier » (vraies données Meta) ───
+function BestTimePanel({ accountId, selectedHour, onPickHour }: {
+  accountId: string | null; selectedHour: number; onPickHour: (h: number) => void;
+}) {
+  const [data, setData] = useState<PageBestTimes | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api.getPageBestTimes(accountId)
+      .then((d) => { if (alive) setData(d); })
+      .catch(() => { if (alive) setData(null); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [accountId]);
+
+  if (loading) {
+    return <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--tx-dim)", padding: "10px 0" }}><Loader2 size={14} className="animate-spin" /> Analyse de l'activité de ton audience…</div>;
+  }
+  if (!data || !data.available) {
+    return <div style={{ fontSize: 11.5, color: "var(--tx-dim)", lineHeight: 1.45 }}>Pas encore assez de données d'activité de ta Page pour recommander une heure (Meta fournit cette statistique à partir d'un certain nombre d'abonnés actifs).</div>;
+  }
+  const max = Math.max(...data.hourly, 1);
+  const best = new Set(data.best_hours);
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--tx-2)", marginBottom: 8 }}>
+        <TrendingUp size={13} style={{ color: "var(--accent)" }} />
+        Meilleur moment pour publier <span style={{ color: "var(--tx-dim)" }}>· quand tes abonnés sont en ligne (moyenne réelle sur {data.days} j)</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(24, 1fr)", gap: 2, alignItems: "end", height: 64 }}>
+        {data.hourly.map((v, h) => {
+          const isBest = best.has(h);
+          const isSel = h === selectedHour;
+          return (
+            <button key={h} type="button" onClick={() => onPickHour(h)} title={`${fmtHourLabel(h)} — ${v} abonnés en ligne (moy.)${isBest ? " · conseillé" : ""}`}
+              style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%", border: "none", background: "none", padding: 0, cursor: "pointer" }}>
+              <span style={{ display: "block", width: "100%", height: `${Math.max(6, (v / max) * 100)}%`, borderRadius: 3, background: isSel ? "var(--accent)" : isBest ? "#22C55E" : "var(--bd-strong)", outline: isSel ? "1.5px solid var(--accent)" : "none" }} />
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "var(--tx-dim)", fontFamily: "JetBrains Mono", marginTop: 4 }}>
+        <span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>23h</span>
+      </div>
+      {data.best_hours.length > 0 && (
+        <div style={{ fontSize: 11.5, color: "var(--tx-3)", marginTop: 8 }}>
+          Heures conseillées : {data.best_hours.map((h) => <button key={h} type="button" onClick={() => onPickHour(h)} style={{ display: "inline-flex", background: "color-mix(in srgb, #22C55E 14%, transparent)", color: "#22C55E", border: "none", borderRadius: 999, padding: "2px 9px", margin: "0 4px 4px 0", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "JetBrains Mono" }}>{fmtHourLabel(h)}</button>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Modale de composition ──────────────────────────────────────
 function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
   open: boolean; initialDate: Date | null; accountId: string | null; onClose: () => void; onDone: () => void;
 }) {
   const toast = useToast();
+  const [platform, setPlatform] = useState<"facebook" | "instagram">("facebook");
   const [type, setType] = useState<ScheduledPostType>("image");
   const [message, setMessage] = useState("");
   const [link, setLink] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  // Instagram: URL publique de l'image ou vidéo (IG Content API exige une URL HTTPS).
+  const [igMediaUrl, setIgMediaUrl] = useState("");
+  const [igMediaType, setIgMediaType] = useState<"image" | "video">("image");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("09:00");
 
@@ -268,6 +369,7 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
     }
 
     setType("image"); setMessage(""); setLink(""); setFile(null);
+    setIgMediaUrl(""); setIgMediaType("image");
     setDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
     setTime(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`);
   }, [open, initialDate]);
@@ -280,35 +382,53 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
   const mutation = useMutation({
     mutationFn: () => {
       const when = new Date(`${date}T${time}:00`);
+      if (platform === "instagram") {
+        return api.createScheduledPost({
+          scheduledTime: when.toISOString(),
+          message,
+          platform: "instagram",
+          image_url: igMediaType === "image" ? igMediaUrl : undefined,
+          video_url: igMediaType === "video" ? igMediaUrl : undefined,
+        }, accountId);
+      }
       return api.createScheduledPost({
         scheduledTime: when.toISOString(),
         message,
+        platform: "facebook",
         link: type === "link" ? link : undefined,
         image: type === "image" ? file : null,
         video: type === "video" ? file : null,
       }, accountId);
     },
-    onSuccess: () => { toast("Post planifié", { kind: "success", msg: "Il sera publié automatiquement par Meta." }); onDone(); },
+    onSuccess: () => {
+      const dest = platform === "instagram" ? "Instagram" : "Facebook";
+      toast("Post planifié", { kind: "success", msg: `Il sera publié automatiquement sur ${dest}.` });
+      onDone();
+    },
     onError: (e) => toast("Échec de la planification", { kind: "error", msg: e instanceof ApiError ? e.message : undefined }),
   });
 
-  // Valide le créneau côté client (message clair) avant d'appeler Meta.
   const handleSubmit = () => {
     const when = new Date(`${date}T${time}:00`);
     if (isNaN(when.getTime())) { toast("Date invalide", { kind: "error", msg: "Vérifie la date et l'heure." }); return; }
-    // Meta refuse un créneau à moins de 10 min : on le dit clairement AVANT l'appel,
-    // au lieu de laisser remonter l'erreur brute (et anglaise) de Meta.
     if (when.getTime() < Date.now() + 10 * 60 * 1000) {
       toast("Créneau trop tôt", { kind: "error", msg: "La date doit être au moins 10 minutes dans le futur (contrainte Meta)." });
+      return;
+    }
+    if (platform === "instagram" && !igMediaUrl.trim()) {
+      toast("URL manquante", { kind: "error", msg: "Instagram nécessite l'URL publique d'une image ou d'une vidéo." });
       return;
     }
     mutation.mutate();
   };
 
   if (!open) return null;
-  const needsMedia = type === "image" || type === "video";
-  const canSubmit = !mutation.isPending && !!date && !!time
-    && Boolean(message.trim() || file || (type === "link" && link.trim()));
+  const needsMedia = platform === "facebook" && (type === "image" || type === "video");
+  const canSubmit = !mutation.isPending && !!date && !!time && (
+    platform === "instagram"
+      ? igMediaUrl.trim().startsWith("http")
+      : Boolean(message.trim() || file || (type === "link" && link.trim()))
+  );
 
   return (
     <div onClick={() => !mutation.isPending && onClose()} className="ms-fade-up" style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(6,13,31,.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -324,6 +444,26 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
           <button onClick={onClose} className="ms-icon-btn" style={{ width: 34, height: 34, borderRadius: 10, background: "transparent", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X size={16} /></button>
         </div>
         <div style={{ padding: 24, overflow: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
+          {/* Sélecteur de plateforme : Facebook ou Instagram */}
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Publier sur</label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {(["facebook", "instagram"] as const).map((p) => {
+                const active = platform === p;
+                const col = p === "facebook" ? "#1877F2" : "#E1306C";
+                const Icon = p === "facebook" ? Facebook : Instagram;
+                return (
+                  <button key={p} onClick={() => setPlatform(p)} className="ms-btn"
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "10px 14px", borderRadius: 10, cursor: "pointer", background: active ? col + "14" : "var(--surf-inset)", border: "1.5px solid " + (active ? col : "var(--bd)"), color: active ? col : "var(--tx-3)" }}>
+                    <Icon size={16} />
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{p === "facebook" ? "Facebook" : "Instagram"}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {platform === "facebook" && (
           <div>
             <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Type de post</label>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
@@ -339,12 +479,48 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
               })}
             </div>
           </div>
+          )}
           <div>
-            <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}><span>Légende</span><span style={{ color: "var(--tx-dim)", fontFamily: "JetBrains Mono", fontSize: 11 }}>{message.length} / 2200</span></label>
-            <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={4} maxLength={2200} placeholder="Que veux-tu partager ?"
+            <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>
+              <span>{platform === "instagram" ? "Légende (caption)" : "Légende"}</span>
+              <span style={{ color: "var(--tx-dim)", fontFamily: "JetBrains Mono", fontSize: 11 }}>{message.length} / 2200</span>
+            </label>
+            <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={4} maxLength={2200}
+              placeholder={platform === "instagram" ? "Légende de la publication Instagram…" : "Que veux-tu partager ?"}
               style={{ width: "100%", background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRadius: 12, padding: 14, color: "var(--tx-2)", fontFamily: "IBM Plex Sans", fontSize: 14, outline: "none", resize: "vertical", lineHeight: 1.5 }} />
           </div>
-          {type === "link" && (
+
+          {/* ── Champs spécifiques Instagram ─────────────────────────────── */}
+          {platform === "instagram" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Type de média</label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {(["image", "video"] as const).map((mt) => (
+                    <button key={mt} onClick={() => setIgMediaType(mt)} className="ms-btn"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px", borderRadius: 10, cursor: "pointer", background: igMediaType === mt ? "#E1306C14" : "var(--surf-inset)", border: "1.5px solid " + (igMediaType === mt ? "#E1306C" : "var(--bd)"), color: igMediaType === mt ? "#E1306C" : "var(--tx-3)" }}>
+                      {mt === "image" ? <ImageIcon size={15} /> : <Film size={15} />}
+                      <span style={{ fontSize: 12, fontWeight: 500 }}>{mt === "image" ? "Photo" : "Vidéo / Reel"}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>
+                  URL publique {igMediaType === "image" ? "de l'image" : "de la vidéo"}
+                </label>
+                <input value={igMediaUrl} onChange={(e) => setIgMediaUrl(e.target.value)}
+                  placeholder={igMediaType === "image" ? "https://example.com/photo.jpg" : "https://example.com/video.mp4"}
+                  style={{ width: "100%", height: 40, background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRadius: 10, padding: "0 14px", color: "var(--tx-2)", fontFamily: "IBM Plex Sans", fontSize: 13, outline: "none" }} />
+                <div style={{ marginTop: 6, fontSize: 11, color: "var(--tx-dim)" }}>
+                  L'API Instagram exige une URL HTTPS publiquement accessible (pas un fichier local).
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Champs spécifiques Facebook ───────────────────────────────── */}
+          {platform === "facebook" && type === "link" && (
             <div>
               <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Lien</label>
               <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://…"
@@ -370,6 +546,15 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
               <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Heure</label>
               <input type="time" value={time} onChange={(e) => setTime(e.target.value)} min={minTimeStr} style={{ width: "100%", height: 40, background: "var(--surf-inset)", border: "1px solid var(--bd)", borderRadius: 10, padding: "0 14px", color: "var(--tx-2)", fontFamily: "IBM Plex Sans", fontSize: 14, outline: "none", colorScheme: "inherit" }} />
             </div>
+          </div>
+          {/* Vraies données Meta : quand tes abonnés sont en ligne → clique une barre
+              ou une heure conseillée pour caler l'heure de publication. */}
+          <div style={{ padding: 14, borderRadius: 12, background: "var(--surf-inset)", border: "1px solid var(--bd)" }}>
+            <BestTimePanel
+              accountId={accountId}
+              selectedHour={Number((time.split(":")[0] || "9"))}
+              onPickHour={(h) => setTime(`${String(h).padStart(2, "0")}:00`)}
+            />
           </div>
         </div>
         <div style={{ padding: "14px 24px", borderTop: "1px solid var(--bd)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
@@ -439,6 +624,9 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
   const today = useMemo(() => new Date(), []);
   const [cursor, setCursor] = useState<Date>(() => new Date());
   const [view, setView] = useState<"Jour" | "Semaine" | "Mois">("Mois");
+  // Mode d'affichage : calendrier (Jour/Semaine/Mois) ou bibliothèque (galerie de
+  // tous les posts, façon « dossier »).
+  const [mode, setMode] = useState<"Calendrier" | "Bibliothèque">("Calendrier");
   // Direction de la dernière navigation : +1 (suivant), -1 (précédent), 0 (fondu).
   // `navSeq` force le re-déclenchement de l'animation même si la cible est identique.
   const [nav, setNav] = useState<{ dir: 1 | -1 | 0; seq: number }>({ dir: 0, seq: 0 });
@@ -533,27 +721,39 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
             ? "Aucun post en file. Clique une date du calendrier pour planifier ta première publication ; Meta s'en charge à l'heure dite."
             : `${scheduledCount} post${scheduledCount > 1 ? "s" : ""} en file${todayCount > 0 ? `, dont ${todayCount} aujourd'hui` : ""}. Clique une date pour en ajouter un ; Meta publie automatiquement.`}</p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Tabs tabs={["Calendrier", "Bibliothèque"]} value={mode} onChange={(t) => setMode(t as "Calendrier" | "Bibliothèque")} />
           <MSButton variant="outline" icon={<RefreshCw size={14} />} onClick={refresh}>Rafraîchir</MSButton>
           <MSButton variant="primary" icon={<Plus size={16} />} onClick={() => setCompose({ open: true, date: cursor })}>Planifier</MSButton>
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={navPrev} aria-label="Période précédente" title="Précédent (←)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronLeft size={16} /></button>
-          <button onClick={navNext} aria-label="Période suivante" title="Suivant (→)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronRight size={16} /></button>
-          <div style={{ padding: "0 6px", minWidth: 220, overflow: "hidden" }}>
-            <div key={`lbl-${nav.seq}`} className={labelClass} style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)", textTransform: "capitalize" }}>{headerLabel}</div>
+      {mode === "Calendrier" ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button onClick={navPrev} aria-label="Période précédente" title="Précédent (←)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronLeft size={16} /></button>
+              <button onClick={navNext} aria-label="Période suivante" title="Suivant (→)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronRight size={16} /></button>
+              <div style={{ padding: "0 6px", minWidth: 220, overflow: "hidden" }}>
+                <div key={`lbl-${nav.seq}`} className={labelClass} style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)", textTransform: "capitalize" }}>{headerLabel}</div>
+              </div>
+              <MSButton variant="outline" size="sm" onClick={goToday} disabled={periodHasToday} title={periodHasToday ? "Tu y es déjà" : "Revenir à aujourd'hui"}>Aujourd'hui</MSButton>
+            </div>
+            <Tabs tabs={["Jour", "Semaine", "Mois"]} value={view} onChange={(t) => changeView(t as "Jour" | "Semaine" | "Mois")} />
           </div>
-          <MSButton variant="outline" size="sm" onClick={goToday} disabled={periodHasToday} title={periodHasToday ? "Tu y es déjà" : "Revenir à aujourd'hui"}>Aujourd'hui</MSButton>
-        </div>
-        <Tabs tabs={["Jour", "Semaine", "Mois"]} value={view} onChange={(t) => changeView(t as "Jour" | "Semaine" | "Mois")} />
-      </div>
 
-      <div style={{ overflow: "hidden" }}>
-        <div key={`view-${nav.seq}`} className={calClass}>{viewNode}</div>
-      </div>
+          <div style={{ overflow: "hidden" }}>
+            <div key={`view-${nav.seq}`} className={calClass}>{viewNode}</div>
+          </div>
+        </>
+      ) : (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--tx-dim)", marginBottom: 4 }}>
+            <LayoutGrid size={14} /> {posts.length} post{posts.length > 1 ? "s" : ""} · planifiés &amp; publiés
+          </div>
+          <LibraryView posts={posts} onPostClick={setSelected} />
+        </div>
+      )}
       </div>
 
       <ComposeModal open={compose.open} initialDate={compose.date} accountId={selectedAccountId}

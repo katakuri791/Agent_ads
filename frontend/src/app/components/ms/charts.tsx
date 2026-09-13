@@ -161,15 +161,18 @@ export function DonutChart({ data, size = 200, thickness = 26 }: { data: DonutDa
 }
 
 // ─── BarChart (vertical) ────────────────────────────────────────
-export function BarChart({ data, height = 180, color = "var(--accent)" }: { data: Array<{ name: string; value: number }>; height?: number; color?: string }) {
+export function BarChart({ data, height = 180, color = "var(--accent)", valueFormat }: { data: Array<{ name: string; value: number }>; height?: number; color?: string; valueFormat?: (v: number) => string }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { const t = setTimeout(() => setMounted(true), 40); return () => clearTimeout(t); }, []);
   const max = Math.max(...data.map((d) => d.value)) || 1;
+  // Par défaut la valeur est un pourcentage (parts d'impressions). Les pages qui
+  // affichent des montants (ex. historique de dépense) passent `valueFormat`.
+  const fmt = valueFormat ?? ((v: number) => `${v}%`);
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: 14, height, paddingTop: 8 }}>
       {data.map((d, i) => (
         <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", height: "100%", justifyContent: "flex-end" }}>
-          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)", marginBottom: 6 }}>{d.value}%</div>
+          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)", marginBottom: 6 }}>{fmt(d.value)}</div>
           <div style={{ width: "100%", maxWidth: 44, borderRadius: "4px 4px 0 0", background: color, height: mounted ? (d.value / max) * (height - 56) : 0, transition: `height 600ms cubic-bezier(.4,0,.2,1) ${i * 50}ms` }} />
           <div style={{ fontSize: 10, color: "var(--tx-dim)", marginTop: 8, textAlign: "center", lineHeight: 1.2 }}>{d.name}</div>
         </div>

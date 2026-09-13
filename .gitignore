@@ -24,6 +24,7 @@ dist/
 # Artefacts de travail hors-code (non versionnés)
 Nouveau dossier/
 AdMind-Vault/
+Schedule/
 
 # Documentation : ne pousser que le README racine sur GitHub.
 # Les autres .md (CLAUDE.md, DESIGN.md, etc.) restent en local mais non versionnés.
@@ -32,3 +33,5 @@ AdMind-Vault/
 
 # Captures d'écran de travail (non versionnées)
 Capture d*.png
+Botpress responses.docx
+input.txt

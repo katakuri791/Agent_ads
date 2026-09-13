@@ -1,7 +1,19 @@
-import { AuthUser, clearToken, getRefreshToken, getToken, setCachedUser, setRefreshToken, setToken } from "./auth";
+import { AuthUser, clearRefreshToken, clearToken, getRefreshToken, getToken, setCachedUser, setRefreshToken, setToken } from "./auth";
 
-const API_BASE: string =
-  (import.meta as any).env?.VITE_API_URL || "http://localhost:8000";
+// On retire tout `/` final : les chemins passés ci-dessous commencent déjà par
+// `/` (ex. `/auth/signup`). Sans ça, une VITE_API_URL finissant par `/` produit
+// une URL à double slash (`…com//auth/signup`) que FastAPI renvoie en 404.
+const API_BASE: string = (
+  (import.meta as any).env?.VITE_API_URL || "http://localhost:8000"
+).replace(/\/+$/, "");
+
+/** Construit l'URL finale en garantissant EXACTEMENT un `/` entre la base et le
+ *  chemin — quels que soient les slashes en trop de chaque côté (base finissant
+ *  par `/`, chemin commençant ou non par `/`). Point unique de jointure : plus
+ *  aucun `${API_BASE}${path}` dispersé ne peut réintroduire un `//auth/signup`. */
+export function buildUrl(path: string): string {
+  return `${API_BASE}/${path.replace(/^\/+/, "")}`;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -50,7 +62,7 @@ async function tryRefresh(): Promise<boolean> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       try {
-        const res = await fetchWithTimeout(`${API_BASE}/auth/refresh`, {
+        const res = await fetchWithTimeout(buildUrl("/auth/refresh"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ refresh_token: rt }),
@@ -89,7 +101,7 @@ async function request<T>(
     const token = getToken();
     if (token) headers["Authorization"] = `Bearer ${token}`;
   }
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
+  const res = await fetchWithTimeout(buildUrl(path), { ...options, headers });
   if (!res.ok) {
     // 401 sur une route normale : on tente un refresh silencieux puis on rejoue
     // la requête UNE fois. Échec du refresh → session morte → logout.
@@ -114,7 +126,7 @@ async function requestForm<T>(path: string, form: FormData, timeoutMs?: number, 
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: "POST", body: form, headers }, timeoutMs);
+  const res = await fetchWithTimeout(buildUrl(path), { method: "POST", body: form, headers }, timeoutMs);
   if (!res.ok) {
     if (res.status === 401 && !isRetry && shouldTryRefresh(path)) {
       if (await tryRefresh()) return requestForm<T>(path, form, timeoutMs, true);
@@ -173,6 +185,9 @@ export interface PagePost {
   created_time?: string | null;
   permalink_url?: string | null;
   full_picture?: string | null;
+  // Type de média réel (photo|video|link|album…) et URL source vidéo (mp4).
+  media_type?: string | null;
+  media_url?: string | null;
   reactions: number;
   comments: number;
   shares: number;
@@ -214,6 +229,38 @@ export interface CampaignSummary {
   metric_name?: string | null;
   metric_value?: number | null;
   is_roas?: boolean | null;
+  // ── Métriques étendues (sélecteur de colonnes) — toutes défaut 0 côté backend.
+  reach?: number;
+  frequency?: number;
+  cpm?: number;
+  cpp?: number;
+  purchases?: number;
+  leads?: number;
+  cost_per_purchase?: number;
+  cost_per_lead?: number;
+  add_to_cart?: number;
+  initiate_checkout?: number;
+  landing_page_views?: number;
+  link_clicks?: number;
+  inline_link_clicks?: number;
+  unique_clicks?: number;
+  outbound_clicks?: number;
+  link_ctr?: number;
+  post_engagement?: number;
+  post_reactions?: number;
+  post_comments?: number;
+  post_shares?: number;
+  post_saves?: number;
+  video_3s?: number;
+  thruplays?: number;
+  video_p25?: number;
+  video_p50?: number;
+  video_p75?: number;
+  video_p100?: number;
+  video_plays?: number;
+  cost_per_thruplay?: number;
+  hook_rate?: number;
+  hold_rate?: number;
 }
 
 /** État de la dernière synchronisation Meta → Supabase pour un compte. */
@@ -305,6 +352,7 @@ export interface AdSetDetail {
   roas: number;
 }
 export interface AdDetail {
+  id?: string | null;
   name: string;
   status: string;
   format: string;
@@ -349,6 +397,67 @@ export interface AudienceReach {
   geo_breakdown: GeoDatum[];
 }
 
+export interface IgProfile {
+  id: string;
+  username?: string | null;
+  name?: string | null;
+  followers_count: number;
+  follows_count: number;
+  media_count: number;
+  profile_picture_url?: string | null;
+  biography?: string | null;
+  website?: string | null;
+}
+export interface IgPost {
+  id: string;
+  caption?: string | null;
+  media_type?: string | null;
+  media_product_type?: string | null;
+  media_url?: string | null;
+  thumbnail_url?: string | null;
+  permalink?: string | null;
+  timestamp?: string | null;
+  like_count: number;
+  comments_count: number;
+  reach?: number | null;        // « combien de gens ont vu » (comptes uniques)
+  impressions?: number | null;  // vues totales
+}
+export interface InstagramResponse {
+  profile?: IgProfile | null;
+  posts: IgPost[];
+  blocked_reason?: string | null;
+}
+
+export interface AccountUser {
+  id: string;
+  name: string;
+  role: string;         // Admin | Advertiser | Analyst | Draft | —
+  tasks: string[];
+}
+export interface AccountUsersResponse {
+  users: AccountUser[];
+  blocked_reason?: string | null;
+}
+
+export interface BillingMonth {
+  month: string;        // YYYY-MM
+  spend: number;
+  impressions: number;
+  clicks: number;
+}
+export interface BillingResponse {
+  name?: string | null;
+  currency?: string | null;
+  account_status?: string | null;
+  amount_spent?: number | null;
+  balance?: number | null;
+  spend_cap?: number | null;
+  payment_type?: string | null;
+  payment_display?: string | null;
+  card_count?: number;
+  history: BillingMonth[];
+}
+
 export interface SearchResultItem {
   kind: "campaign" | "post" | "page";
   id: string;
@@ -370,6 +479,31 @@ export interface AudienceSpec {
   countries: string[];
   interests: string[];
   genders?: string | null;
+  city_key?: string | null;
+  city_name?: string | null;
+  region_name?: string | null;
+  radius_km?: number | null;
+}
+
+/** Localisation Meta réelle (résultat d'autocomplétion pour le ciblage géo). */
+export interface GeoLocation {
+  key: string;
+  name: string;
+  type?: string | null;
+  region?: string | null;
+  region_id?: number | null;
+  country_code?: string | null;
+  country_name?: string | null;
+  supports_region?: boolean | null;
+}
+
+/** Activité réelle des abonnés de la Page par heure (meilleur moment de publication). */
+export interface PageBestTimes {
+  available: boolean;
+  hourly: number[];      // 24 valeurs (0h → 23h)
+  best_hours: number[];  // top heures conseillées
+  days: number;
+  reason?: string | null;
 }
 
 export interface AdCopy {
@@ -410,7 +544,7 @@ export interface QuestionOptionT {
 export interface QuestionT {
   id: string;
   label: string;
-  type: "single" | "multi" | "text" | "media";
+  type: "single" | "multi" | "text" | "media" | "geo";
   options: QuestionOptionT[];
   allow_custom: boolean;
   placeholder?: string | null;
@@ -462,6 +596,12 @@ function acctParam(accountId?: string | null): string {
   return accountId ? `&account_id=${encodeURIComponent(accountId)}` : "";
 }
 
+/** `&platform=facebook|instagram` pour le toggle plateforme. Vide (ou "all") →
+ *  le backend agrège toutes les plateformes (comportement historique). */
+function platformParam(platform?: string | null): string {
+  return platform && platform !== "all" ? `&platform=${encodeURIComponent(platform)}` : "";
+}
+
 export type NotificationType = "sync_error" | "campaign_failed" | "token_expired";
 export interface AppNotification {
   id: string;
@@ -496,7 +636,11 @@ export const api = {
       false,
     );
     setToken(data.access_token);
+    // Un login délégué (plateforme du client) ne renvoie PAS de refresh token. On
+    // efface alors celui d'une session précédente : sinon, au premier 401, le front
+    // rejouerait l'ancien refresh token et basculerait sur l'utilisateur d'avant.
     if (data.refresh_token) setRefreshToken(data.refresh_token);
+    else clearRefreshToken();
     setCachedUser(data.user);
     return data.user;
   },
@@ -620,17 +764,30 @@ export const api = {
   getScheduledPosts: (accountId?: string | null) =>
     request<ScheduledPostsResponse>(`/meta/scheduled-posts?_=1${acctParam(accountId)}`),
 
-  /** Planifie un post (texte/lien/photo/vidéo). `scheduledTime` = ISO 8601. */
+  /** Planifie un post sur Facebook ou Instagram. `scheduledTime` = ISO 8601.
+   *  Instagram : fournir `image_url` ou `video_url` (URL HTTPS publique). */
   createScheduledPost: (
-    body: { scheduledTime: string; message?: string; link?: string; image?: File | null; video?: File | null },
+    body: {
+      scheduledTime: string;
+      message?: string;
+      link?: string;
+      image?: File | null;
+      video?: File | null;
+      platform?: "facebook" | "instagram";
+      image_url?: string;
+      video_url?: string;
+    },
     accountId?: string | null,
   ) => {
     const form = new FormData();
     form.append("scheduled_time", body.scheduledTime);
     form.append("message", body.message || "");
+    form.append("platform", body.platform || "facebook");
     if (body.link) form.append("link", body.link);
     if (body.image) form.append("image", body.image);
     if (body.video) form.append("video", body.video);
+    if (body.image_url) form.append("image_url", body.image_url);
+    if (body.video_url) form.append("video_url", body.video_url);
     return requestForm<{ ok: boolean; post_id?: string | null }>(
       `/meta/scheduled-posts?_=1${acctParam(accountId)}`,
       form,
@@ -662,16 +819,39 @@ export const api = {
       `/meta/campaigns/${encodeURIComponent(campaignId)}/detail?${rangeQuery(range)}${acctParam(accountId)}${section ? `&section=${section}` : ""}`,
     ),
 
+  /** Autocomplétion de vraies villes/régions Meta pour le ciblage géographique. */
+  geoSearch: (q: string, locationTypes = "city", accountId?: string | null) =>
+    request<GeoLocation[]>(
+      `/meta/geo-search?q=${encodeURIComponent(q)}&location_types=${encodeURIComponent(locationTypes)}${acctParam(accountId)}`,
+    ),
+
+  /** Activité réelle des abonnés de la Page par heure (meilleur moment de publier). */
+  getPageBestTimes: (accountId?: string | null) =>
+    request<PageBestTimes>(`/meta/page-best-times?_=1${acctParam(accountId)}`),
+
   getAudiences: (accountId?: string | null) =>
     request<AudienceSummary[]>(`/meta/audiences?_=1${acctParam(accountId)}`),
 
-  getAudienceReach: (days: number | "all" = 30, accountId?: string | null) =>
+  // ── Instagram (profil + posts avec portée) ─────────────────────────────────
+  getInstagram: (accountId?: string | null) =>
+    request<InstagramResponse>(`/meta/instagram?_=1${acctParam(accountId)}`),
+
+  // ── Personnes/rôles + facturation du compte pub Meta ───────────────────────
+  getAccountUsers: (accountId?: string | null) =>
+    request<AccountUsersResponse>(`/meta/account-users?_=1${acctParam(accountId)}`),
+  getBilling: (accountId?: string | null) =>
+    request<BillingResponse>(`/meta/billing?_=1${acctParam(accountId)}`),
+
+  getAudienceReach: (days: number | "all" = 30, accountId?: string | null, campaignId?: string | null, platform?: string | null) =>
     request<AudienceReach>(
-      (days === "all" ? `/meta/audience-reach?period=all` : `/meta/audience-reach?days=${days}`) + acctParam(accountId),
+      (days === "all" ? `/meta/audience-reach?period=all` : `/meta/audience-reach?days=${days}`)
+      + acctParam(accountId)
+      + (campaignId ? `&campaign_id=${encodeURIComponent(campaignId)}` : "")
+      + platformParam(platform),
     ),
 
-  getCampaigns: (range: DateRange = { preset: "last_30d" }, accountId?: string | null) =>
-    request<CampaignSummary[]>(`/meta/campaigns?${rangeQuery(range)}${acctParam(accountId)}`),
+  getCampaigns: (range: DateRange = { preset: "last_30d" }, accountId?: string | null, platform?: string | null) =>
+    request<CampaignSummary[]>(`/meta/campaigns?${rangeQuery(range)}${acctParam(accountId)}${platformParam(platform)}`),
 
   updateCampaignStatus: (campaignId: string, status: "ACTIVE" | "PAUSED", accountId?: string | null) =>
     request<{ ok: boolean; status: string }>(
@@ -679,13 +859,19 @@ export const api = {
       { method: "PATCH", body: JSON.stringify({ status }) },
     ),
 
-  getDashboard: (days: number | "all" = 30, accountId?: string | null, since?: string, until?: string) =>
+  updateAdStatus: (adId: string, status: "ACTIVE" | "PAUSED", accountId?: string | null) =>
+    request<{ ok: boolean; status: string }>(
+      `/meta/ads/${encodeURIComponent(adId)}/status?_=1${acctParam(accountId)}`,
+      { method: "PATCH", body: JSON.stringify({ status }) },
+    ),
+
+  getDashboard: (days: number | "all" = 30, accountId?: string | null, since?: string, until?: string, platform?: string | null) =>
     request<DashboardResponse>(
       (days === "all"
         ? `/meta/dashboard?period=all`
         : since && until
           ? `/meta/dashboard?days=${days}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`
-          : `/meta/dashboard?days=${days}`) + acctParam(accountId),
+          : `/meta/dashboard?days=${days}`) + acctParam(accountId) + platformParam(platform),
     ),
 
   search: (q: string, accountId?: string | null) =>

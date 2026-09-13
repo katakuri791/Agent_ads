@@ -1,6 +1,13 @@
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class SignupRequest(BaseModel):
@@ -24,6 +31,14 @@ class UserPublic(BaseModel):
     company: Optional[str] = None
 
 
+class AgentInfo(BaseModel):
+    """Identité de l'agent IA (un seul agent dans la plateforme)."""
+
+    id: str
+    name: str
+    description: str
+
+
 class UserUpdateRequest(BaseModel):
     full_name: Optional[str] = None
     first_name: Optional[str] = None
@@ -37,6 +52,10 @@ class AuthResponse(BaseModel):
     refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: UserPublic
+    # Login délégué (tybotflow) : on remonte TEL QUEL le corps de réponse de
+    # l'endpoint /auth/login du client (access_token, userData, …) pour que
+    # l'appelant dispose de toutes ses données. Vide (None) pour un login local.
+    client_response: Optional[dict[str, Any]] = None
 
 
 class RefreshRequest(BaseModel):
@@ -121,6 +140,13 @@ class AudienceSpec(BaseModel):
     countries: list[str] = Field(default_factory=lambda: ["MA"])
     interests: list[str] = Field(default_factory=list)
     genders: Optional[str] = None  # "all" | "men" | "women"
+    # Ciblage géographique fin (optionnel) : une ville Meta (clé adgeolocation) +
+    # sa région + un rayon en km autour d'elle. Quand `city_key` est présent, le
+    # ciblage se fait par ville/rayon plutôt que par pays entier.
+    city_key: Optional[str] = None
+    city_name: Optional[str] = None
+    region_name: Optional[str] = None
+    radius_km: Optional[int] = None
 
 
 class AdCopy(BaseModel):
@@ -169,8 +195,9 @@ class Question(BaseModel):
     id: str
     label: str
     # single = un seul choix ; multi = plusieurs ; text = champ libre ;
-    # media = upload d'une photo ou d'une vidéo.
-    type: Literal["single", "multi", "text", "media"] = "single"
+    # media = upload d'une photo ou d'une vidéo ; geo = sélecteur ville + région
+    # + rayon (km) basé sur les vraies villes Meta.
+    type: Literal["single", "multi", "text", "media", "geo"] = "single"
     options: list[QuestionOption] = Field(default_factory=list)
     # allow_custom = afficher un champ « Autre / préciser » sous le QCM quand
     # l'utilisateur ne trouve pas son choix dans la liste.
@@ -213,11 +240,125 @@ StructuredOutput = Union[
 
 
 class ChatRequest(BaseModel):
-    message: str
+    # `/chat` accepte deux formats sur le MÊME body :
+    #  • frontend      → `message` (+ `account_id`)
+    #  • Botpress/plat → `text` (= message) et `bot_id`/`bot_Id` (= account_id)
+    # Le validateur ci-dessous replie `text→message` et `bot_id→account_id`
+    # quand le champ principal est absent, donc `/chat` fonctionne tel quel avec
+    # l'entrée `input.txt` (text, bot_id, user_id, conversation_id).
+    model_config = {"populate_by_name": True}
+
+    message: Optional[str] = None
+    text: Optional[str] = None  # alias Botpress de `message`
     conversation_id: Optional[str] = None
     attached_image_hash: Optional[str] = None
     attached_image_url: Optional[str] = None
     account_id: Optional[str] = None
+    # `bot_id` (= account_id, compte Meta ciblé). Accepte aussi la casse Botpress
+    # `bot_Id` de input.txt. Vide → compte par défaut de l'utilisateur.
+    bot_id: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("bot_id", "bot_Id")
+    )
+    # Identité de l'appelant pour /chat public (ex. user_id tybotflow / Botpress).
+    # Sert à séparer le rate-limit par personne et à tracer qui parle à l'agent.
+    # Optionnel : absent → on retombe sur l'utilisateur de démo fixe.
+    user_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _accept_botpress_aliases(self) -> "ChatRequest":
+        if not (self.message or "").strip() and (self.text or "").strip():
+            self.message = self.text
+        if not (self.account_id or "").strip() and (self.bot_id or "").strip():
+            self.account_id = self.bot_id
+        if not (self.message or "").strip():
+            raise ValueError("`message` (ou `text`) est requis.")
+        return self
+
+
+# ─── Botpress (format d'entrée/sortie de l'intégration externe) ───────────────
+# Botpress envoie le message au format `input.txt` (type/text/bot_Id/payload) et
+# attend en retour un tableau `responses` (voir « Botpress responses.docx »). On
+# mappe ici ce format sur nos ChatRequest/ChatResponse internes sans toucher au
+# `/chat` du frontend.
+
+
+# Valeur d'exemple pré-remplie par Swagger UI : si l'utilisateur teste l'endpoint
+# sans la remplacer, on la refuse avec un message clair plutôt que de laisser un
+# faux identifiant filer plus loin (compte Meta introuvable → erreur confuse).
+_PLACEHOLDER = "string"
+
+
+def _reject_placeholder(value: str, field: str) -> str:
+    # `min_length=1` de Pydantic compte les espaces : `" "` a une longueur de 1 et
+    # passe donc la contrainte. On rejette ici toute valeur VIDE une fois les espaces
+    # retirés (chaîne blanche = pas un vrai identifiant), et on renvoie la valeur
+    # NETTOYÉE (strip) pour qu'aucun espace parasite ne file en aval.
+    v = value.strip()
+    if not v:
+        raise ValueError(
+            f"« {field} » ne peut pas être vide. Renseigne un {field} réel."
+        )
+    if v.lower() == _PLACEHOLDER:
+        raise ValueError(
+            f"« {field} » doit être une vraie valeur, pas l'exemple « string ». "
+            f"Renseigne un {field} réel."
+        )
+    return v
+
+
+class BotpressPayload(BaseModel):
+    # `user_id` = identité de la personne qui parle → OBLIGATOIRE (le fil est résolu
+    # à partir de lui, cf. chat_botpress). Non vide requis (min_length=1).
+    user_id: str = Field(..., min_length=1)
+    conversation_id: Optional[str] = None  # IGNORÉ (le fil vient du user_id)
+    channel: str = "web"                   # toujours "web" côté Botpress (ignoré)
+
+    @field_validator("user_id")
+    @classmethod
+    def _no_placeholder_user_id(cls, v: str) -> str:
+        return _reject_placeholder(v, "user_id")
+
+
+class BotpressChatRequest(BaseModel):
+    # `text` = le message ; `bot_id` = l'account_id (compte Meta ciblé) → OBLIGATOIRE ;
+    # `payload.user_id` = identité (obligatoire). `payload.conversation_id` est ignoré.
+    type: str = "text"
+    # `text` = le message. Vide ou blanc (« », «   ») → refusé ICI : sans ça,
+    # ChatRequest lève plus bas un ValidationError NON attrapé → HTTP 500 brut.
+    # On ne refuse PAS l'exemple « string » comme pour les identifiants : un
+    # message peut légitimement contenir n'importe quel mot.
+    text: str = Field(..., min_length=1)
+    # On accepte les DEUX casses : `bot_id` (minuscule, notre format) et `bot_Id`
+    # (la casse historique de Botpress dans input.txt) — même choix que ChatRequest,
+    # pour qu'aucun appelant existant ne casse.
+    bot_id: str = Field(
+        ..., min_length=1, validation_alias=AliasChoices("bot_id", "bot_Id")
+    )
+    payload: BotpressPayload
+
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, v: str) -> str:
+        # Même règle que `_reject_placeholder` pour le vide : `min_length=1`
+        # compte les espaces, donc «   » passerait la contrainte Pydantic.
+        if not v.strip():
+            raise ValueError(
+                "« text » ne peut pas être vide. Écris un message."
+            )
+        return v
+
+    @field_validator("bot_id")
+    @classmethod
+    def _no_placeholder_bot_id(cls, v: str) -> str:
+        return _reject_placeholder(v, "bot_id")
+
+
+class BotpressChatResponse(BaseModel):
+    # `responses` = liste hétérogène de messages Botpress (text / single-choice /
+    # card…). On renvoie aussi `conversation_id` pour que Botpress le repasse au
+    # prochain tour (continuité du fil).
+    conversation_id: str
+    responses: list[dict[str, Any]] = []
 
 
 class ToolCallInfo(BaseModel):
@@ -248,6 +389,20 @@ class MessageOut(BaseModel):
     metadata: dict[str, Any] = {}
 
 
+# ─── Session (toute la discussion d'UNE conversation) ─────────────────────────
+# Une « session » = le fil complet d'une conversation : on fournit l'`id` de la
+# conversation et on récupère ses métadonnées + TOUS ses messages (la discussion
+# de bout en bout, dans l'ordre chronologique).
+
+
+class SessionOut(BaseModel):
+    conversation_id: str
+    title: Optional[str] = None
+    created_at: str
+    updated_at: Optional[str] = None
+    messages: list[MessageOut] = []
+
+
 # ─── Meta data read endpoints ────────────────────────────────────────────────
 
 
@@ -272,6 +427,41 @@ class CampaignSummary(BaseModel):
     metric_name: Optional[str] = None
     metric_value: Optional[float] = None
     is_roas: Optional[bool] = None
+    # ── Métriques étendues (sélecteur de colonnes des campagnes) ──────────────
+    # Toutes optionnelles avec défaut 0 → l'ancien frontend ignore ce qu'il ne
+    # connaît pas, et une campagne sans vidéo renvoie simplement des 0.
+    reach: int = 0
+    frequency: float = 0.0
+    cpm: float = 0.0
+    cpp: float = 0.0
+    purchases: int = 0
+    leads: int = 0
+    cost_per_purchase: float = 0.0
+    cost_per_lead: float = 0.0
+    add_to_cart: int = 0
+    initiate_checkout: int = 0
+    landing_page_views: int = 0
+    link_clicks: int = 0
+    inline_link_clicks: int = 0
+    unique_clicks: int = 0
+    outbound_clicks: int = 0
+    link_ctr: float = 0.0
+    post_engagement: int = 0
+    post_reactions: int = 0
+    post_comments: int = 0
+    post_shares: int = 0
+    post_saves: int = 0
+    # Vidéo
+    video_3s: int = 0
+    thruplays: int = 0
+    video_p25: int = 0
+    video_p50: int = 0
+    video_p75: int = 0
+    video_p100: int = 0
+    video_plays: int = 0
+    cost_per_thruplay: float = 0.0
+    hook_rate: float = 0.0
+    hold_rate: float = 0.0
 
 
 class CampaignStatusUpdate(BaseModel):
@@ -316,6 +506,10 @@ class PagePost(BaseModel):
     created_time: Optional[str] = None
     permalink_url: Optional[str] = None
     full_picture: Optional[str] = None
+    # Type de média réel du post (photo|video|link|album…) et, pour une vidéo,
+    # l'URL source (mp4) jouable directement dans un lecteur <video>.
+    media_type: Optional[str] = None
+    media_url: Optional[str] = None
     reactions: int = 0
     comments: int = 0
     shares: int = 0
@@ -384,6 +578,75 @@ class AudienceReachResponse(BaseModel):
     demographics: list[dict[str, Any]] = []
     placements: list[dict[str, Any]] = []
     geo_breakdown: list[dict[str, Any]] = []
+
+
+class IgProfile(BaseModel):
+    id: str
+    username: Optional[str] = None
+    name: Optional[str] = None
+    followers_count: int = 0
+    follows_count: int = 0
+    media_count: int = 0
+    profile_picture_url: Optional[str] = None
+    biography: Optional[str] = None
+    website: Optional[str] = None
+
+
+class IgPost(BaseModel):
+    id: str
+    caption: Optional[str] = None
+    media_type: Optional[str] = None
+    media_product_type: Optional[str] = None
+    media_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    permalink: Optional[str] = None
+    timestamp: Optional[str] = None
+    like_count: int = 0
+    comments_count: int = 0
+    # « Combien de gens ont vu » = reach (comptes uniques). None si indisponible.
+    reach: Optional[int] = None
+    impressions: Optional[int] = None
+
+
+class InstagramResponse(BaseModel):
+    profile: Optional[IgProfile] = None
+    posts: list[IgPost] = []
+    # Raison Meta réelle si Instagram est indisponible (aucun compte IG lié, scope
+    # manquant…). None si les données sont bien chargées.
+    blocked_reason: Optional[str] = None
+
+
+class AccountUser(BaseModel):
+    id: str
+    name: str
+    role: str = "—"           # Admin | Advertiser | Analyst | Draft | —
+    tasks: list[str] = []     # permissions Meta brutes (MANAGE, ADVERTISE…)
+
+
+class AccountUsersResponse(BaseModel):
+    users: list[AccountUser] = []
+    # Raison Meta réelle si l'accès est refusé (scope business_management manquant…).
+    blocked_reason: Optional[str] = None
+
+
+class BillingMonth(BaseModel):
+    month: str                # YYYY-MM
+    spend: float = 0.0
+    impressions: int = 0
+    clicks: int = 0
+
+
+class BillingResponse(BaseModel):
+    name: Optional[str] = None
+    currency: Optional[str] = None
+    account_status: Optional[str] = None
+    amount_spent: Optional[float] = None
+    balance: Optional[float] = None
+    spend_cap: Optional[float] = None
+    payment_type: Optional[str] = None       # ex. « Credit Card », « Paypal »
+    payment_display: Optional[str] = None     # ex. « Visa ****1234 »
+    card_count: int = 0                       # nb de moyens de paiement (source active Meta)
+    history: list[BillingMonth] = []          # dépense mensuelle (vraies données)
 
 
 class SearchResultItem(BaseModel):

@@ -1,3 +1,5 @@
+import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -5,9 +7,12 @@ from typing import Optional
 import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import (
+    CHAT_API_KEY,
+    CHAT_API_USER_ID,
+    CLIENT_AUTH_URL,
     JWT_ALGORITHM,
     JWT_EXPIRES_HOURS,
     JWT_SECRET,
@@ -15,7 +20,37 @@ from .config import (
 )
 from .schemas import UserPublic
 
+logger = logging.getLogger("metainsight")
+
 bearer_scheme = HTTPBearer(auto_error=True)
+
+# `user.id` sert de clé de cloisonnement partout (meta_accounts, conversations,
+# notifications…). Les utilisateurs du login délégué (tybotflow) sont identifiés
+# par leur `userData.id` = un UUID, alors que nos users locaux ont des PK entières
+# NocoDB (1, 2, 3…). Les deux espaces ne se recoupent donc JAMAIS (un UUID n'est
+# pas un entier) → on n'ajoute plus aucun préfixe : `user.id` porte l'id distant
+# tel quel. On distingue les deux mondes par la forme de l'id (numérique = local).
+
+
+def is_delegated_user(user_id: str) -> bool:
+    """True si l'id vient du login délégué (⇒ aucune ligne locale dans `users`).
+    Nos users locaux ont une PK entière NocoDB ; tout id NON numérique (UUID
+    tybotflow, `user_id` externe) est un utilisateur délégué."""
+    return not str(user_id).strip().isdigit()
+
+
+def delegated_id(raw: str) -> str:
+    """Normalise l'identité d'un utilisateur distant (login délégué OU Botpress)
+    en clé de tenant. On renvoie l'id BRUT (sans préfixe) : c'est le `userData.id`
+    tybotflow au login, et le `user_id` fourni par l'appelant externe dans /chat &
+    /sessions → un même utilisateur tybotflow partage le MÊME fil, qu'il passe par
+    le dashboard ou par Botpress."""
+    return str(raw).strip()
+
+# Variantes non-bloquantes pour la dépendance mixte clé d'API / JWT : elles ne
+# lèvent pas si l'en-tête est absent, on décide nous-mêmes dans get_user_or_api_key.
+optional_bearer_scheme = HTTPBearer(auto_error=False)
+api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -29,12 +64,24 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_jwt(user_id: str) -> str:
+def create_jwt(
+    user_id: str,
+    *,
+    email: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> str:
     payload = {
-        "sub": user_id,
+        "sub": str(user_id),
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRES_HOURS),
     }
+    # Identité auto-portée : pour un login délégué (tybotflow), les utilisateurs ne
+    # vivent PAS dans SmartDB. On embarque email + nom dans NOTRE JWT pour que
+    # get_current_user reconstruise l'utilisateur sans aucune lecture SmartDB.
+    if email:
+        payload["email"] = email
+    if full_name:
+        payload["full_name"] = full_name
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -104,14 +151,40 @@ def revoke_refresh_token(refresh_token: str) -> None:
     supabase_admin.table("refresh_tokens").delete().eq("token", refresh_token).execute()
 
 
-def decode_jwt(token: str) -> str:
+def _decode_jwt_payload(token: str) -> dict:
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload["sub"]
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def decode_jwt(token: str) -> str:
+    return _decode_jwt_payload(token)["sub"]
+
+
+def _user_from_claims(payload: dict) -> UserPublic:
+    """Reconstruit un UserPublic depuis les claims d'un JWT auto-porté (login
+    délégué tybotflow) — SANS lire SmartDB."""
+    first, last = _split_full_name(payload.get("full_name"))
+    return UserPublic(
+        id=str(payload["sub"]),
+        email=payload.get("email") or "",
+        full_name=payload.get("full_name"),
+        first_name=first,
+        last_name=last,
+    )
+
+
+def _user_from_token(token: str) -> UserPublic:
+    """Résout l'utilisateur d'un JWT. Si le token porte son identité (claim
+    `email`, cas du login délégué tybotflow) → reconstruction sans SmartDB. Sinon
+    (JWT local historique) → chargement depuis la table `users`."""
+    payload = _decode_jwt_payload(token)
+    if payload.get("email"):
+        return _user_from_claims(payload)
+    return _load_user(payload["sub"])
 
 
 def _split_full_name(full: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -148,6 +221,18 @@ def update_user_profile(user_id: str, patch: dict) -> UserPublic:
     Columns that don't exist (e.g. company) are silently dropped so we degrade
     gracefully when the schema hasn't been migrated yet.
     """
+    # Utilisateur du login délégué : il n'a AUCUNE ligne dans `users` (son profil
+    # vit chez le client). Sans ce garde-fou, la lecture ci-dessous ne trouverait
+    # rien → 404 « User not found », incompréhensible pour l'utilisateur.
+    if is_delegated_user(user_id):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Votre profil est géré par la plateforme de votre entreprise : "
+                "il se modifie là-bas, pas ici."
+            ),
+        )
+
     clean = {k: v for k, v in patch.items() if v is not None and v != ""}
     # Always keep full_name in sync if first/last provided.
     if "first_name" in clean or "last_name" in clean:
@@ -205,6 +290,18 @@ def update_user_profile(user_id: str, patch: dict) -> UserPublic:
 
 
 def signup(email: str, password: str, full_name: Optional[str]) -> tuple[str, str, UserPublic]:
+    # Login délégué actif ⇒ créer un compte local n'a plus aucun sens : il serait
+    # impossible de s'y connecter (le login part toujours chez le client). On le
+    # refuse explicitement plutôt que de laisser l'utilisateur dans une impasse.
+    if CLIENT_AUTH_URL:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "La création de compte se fait sur la plateforme de votre entreprise. "
+                "Connectez-vous ici avec vos identifiants habituels."
+            ),
+        )
+
     existing = (
         supabase_admin.table("users").select("id").eq("email", email).execute()
     )
@@ -228,7 +325,39 @@ def signup(email: str, password: str, full_name: Optional[str]) -> tuple[str, st
     return access, refresh, _user_row_to_public(row)
 
 
-def login(email: str, password: str) -> tuple[str, str, UserPublic]:
+def login(
+    email: str, password: str
+) -> tuple[str, Optional[str], UserPublic, Optional[dict]]:
+    """Renvoie (access_token, refresh_token, user, client_response).
+
+    `client_response` = le corps BRUT de l'endpoint /auth/login du client (login
+    délégué) ; None pour un login local."""
+    # Login délégué : si l'URL du client est configurée, on authentifie chez lui
+    # (tybotflow). Les utilisateurs vivent CHEZ tybotflow, pas dans SmartDB : on ne
+    # cherche/crée donc AUCUNE ligne locale. Sinon, login 100 % local (historique).
+    if CLIENT_AUTH_URL:
+        from .client_auth import client_login  # import tardif : évite un cycle.
+
+        identity = client_login(email, password)  # lève 401 si identifiants faux.
+        # Identité issue de la réponse tybotflow (email, sub, nom), ré-encodée dans
+        # NOTRE JWT auto-porté → get_current_user n'a plus besoin de SmartDB.
+        #
+        # Clé de tenant = le VRAI `user_id` distant (`userData.id` = UUID tybotflow,
+        # cf. output.txt), SANS préfixe, toujours identique d'un login à l'autre.
+        # C'est aussi la même valeur que le `user_id` fourni par Botpress →
+        # dashboard et Botpress partagent le même fil. On retombe sur l'email
+        # (normalisé) seulement si la réponse du client ne portait pas d'id (défensif).
+        remote_id = identity.get("remote_user_id")
+        user_id = str(remote_id).strip() if remote_id else (email or identity["email"]).strip().lower()
+        email_val = identity["email"]
+        full_name = identity.get("full_name")
+        public = UserPublic(id=str(user_id), email=email_val, full_name=full_name)
+        access = create_jwt(user_id, email=email_val, full_name=full_name)
+        # Pas de refresh token pour un user délégué : sa rotation lirait la table
+        # `users` (SmartDB) qui n'existe pas ici. La session dure JWT_EXPIRES_HOURS
+        # puis re-login. (À brancher sur le refresh tybotflow plus tard si besoin.)
+        return access, None, public, identity.get("raw")
+
     res = (
         supabase_admin.table("users")
         .select("*")
@@ -243,13 +372,11 @@ def login(email: str, password: str) -> tuple[str, str, UserPublic]:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     access = create_jwt(row["id"])
     refresh = create_refresh_token(row["id"])
-    return access, refresh, _user_row_to_public(row)
+    return access, refresh, _user_row_to_public(row), None
 
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-) -> UserPublic:
-    user_id = decode_jwt(credentials.credentials)
+def _load_user(user_id: str) -> UserPublic:
+    """Charge un utilisateur par id → UserPublic (401 si introuvable)."""
     res = (
         supabase_admin.table("users")
         .select("*")
@@ -260,3 +387,60 @@ def get_current_user(
     if not res.data:
         raise HTTPException(status_code=401, detail="User not found")
     return _user_row_to_public(res.data[0])
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> UserPublic:
+    return _user_from_token(credentials.credentials)
+
+
+def get_user_or_api_key(
+    api_key: Optional[str] = Depends(api_key_scheme),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer_scheme),
+) -> UserPublic:
+    """Auth mixte pour les intégrateurs externes (Botpress) ET le frontend.
+
+    - Si un header `X-API-Key` valide est fourni → agit au nom de
+      `CHAT_API_USER_ID` (pas besoin de JWT). Comparaison en temps constant.
+    - Sinon on retombe sur le JWT Bearer habituel (frontend inchangé).
+    - Aucun credential valide → 401.
+
+    ⚠️ La clé d'API est un secret partagé : /chat peut créer de vraies campagnes
+    Meta. Ne l'exposer qu'à des intégrateurs de confiance et via HTTPS.
+    """
+    if api_key and CHAT_API_KEY and secrets.compare_digest(api_key, CHAT_API_KEY):
+        return _load_user(CHAT_API_USER_ID)
+    if credentials is not None:
+        return _user_from_token(credentials.credentials)
+    raise HTTPException(
+        status_code=401,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def get_user_or_public(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer_scheme),
+) -> UserPublic:
+    """Auth « publique » du chat — ne lève JAMAIS 401 (endpoint public).
+
+    - Si un JWT Bearer valide est fourni (le frontend) → agit au nom de cet
+      utilisateur → la vraie app garde son multi-utilisateur, inchangée.
+    - Si AUCUN credential n'est fourni (Botpress / appel externe) → retombe sur
+      l'utilisateur de démo fixe `CHAT_API_USER_ID`. Tout le monde partage donc ce
+      compte de démo (et son compte Meta).
+
+    ⚠️ Public = n'importe qui peut appeler /chat. C'est acceptable ici parce que
+    (1) l'agent agit toujours au nom d'UN SEUL user de démo (pas d'usurpation
+    possible), (2) les campagnes sont créées PAUSED (aucune dépense auto), et
+    (3) le rate-limit de /chat, keyé sur cet user, agit comme un frein global.
+    Le seul coût réel exposé est la conso LLM. Ne pas y brancher un compte Meta
+    sensible.
+
+    ⚠️ Un JWT présent mais INVALIDE lève quand même 401 (jeton cassé = erreur,
+    pas un anonyme). Seule l'absence totale de credential ⇒ mode démo.
+    """
+    if credentials is not None:
+        return _user_from_token(credentials.credentials)
+    return _load_user(CHAT_API_USER_ID)

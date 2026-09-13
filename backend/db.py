@@ -204,6 +204,21 @@ def list_conversations(user_id: str) -> list[dict]:
     return res.data or []
 
 
+def get_latest_conversation(user_id: str) -> Optional[dict]:
+    """Renvoie la conversation la plus récente de l'utilisateur (ou None). Sert au
+    canal Botpress : l'appelant ne fournit qu'un `user_id` → on retrouve son fil en
+    cours pour le continuer, sans qu'il ait à tracer un `conversation_id`."""
+    res = (
+        supabase_admin.table("conversations")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
 def create_conversation(user_id: str, title: str = "Nouvelle conversation") -> str:
     res = (
         supabase_admin.table("conversations")
@@ -214,11 +229,34 @@ def create_conversation(user_id: str, title: str = "Nouvelle conversation") -> s
 
 
 def get_conversation(conversation_id: str, user_id: str) -> Optional[dict]:
+    # Les id SmartDB/NocoDB sont des entiers auto (PK). Un id non numérique
+    # (ex. le placeholder "string" de Swagger) ne peut donc pas exister → on
+    # renvoie None ici plutôt que d'envoyer un filtre que NocoDB rejette (400),
+    # ce qui remonterait en 500 brut chez l'appelant (/chat, /conversations/…).
+    if not str(conversation_id).isdigit():
+        return None
     res = (
         supabase_admin.table("conversations")
         .select("*")
         .eq("id", conversation_id)
         .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def get_conversation_by_id(conversation_id: str) -> Optional[dict]:
+    """Charge une conversation par son seul `id` (sans filtre `user_id`). Sert la
+    route /sessions : l'id de la conversation fait office de handle → on renvoie le
+    fil demandé. Garde le même filet que get_conversation : un id non numérique ne
+    peut pas exister côté NocoDB (PK entière) → None plutôt qu'un 400 brut."""
+    if not str(conversation_id).isdigit():
+        return None
+    res = (
+        supabase_admin.table("conversations")
+        .select("*")
+        .eq("id", conversation_id)
         .limit(1)
         .execute()
     )
@@ -283,9 +321,16 @@ def create_scheduled_post_record(
     link: Optional[str] = None,
     full_picture: Optional[str] = None,
     account_id: Optional[str] = None,
+    platform: str = "facebook",
+    ig_media_url: Optional[str] = None,
+    ig_media_type: Optional[str] = None,
 ) -> Optional[dict]:
     """Enregistre une planification. Best-effort : un échec de persistance ne doit
-    pas faire échouer la création Meta déjà réussie."""
+    pas faire échouer la création Meta déjà réussie.
+
+    Facebook : Meta planifie côté serveur → la ligne est un simple historique.
+    Instagram : Meta ne planifie PAS → `ig_media_url`/`ig_media_type` portent la
+    demande, publiée plus tard par le job `ig_publish` (cf. 0011)."""
     try:
         res = (
             supabase_admin.table("scheduled_posts")
@@ -301,6 +346,9 @@ def create_scheduled_post_record(
                     "full_picture": full_picture,
                     "scheduled_time": scheduled_time,
                     "status": "scheduled",
+                    "platform": platform,
+                    "ig_media_url": ig_media_url,
+                    "ig_media_type": ig_media_type,
                 }
             )
             .execute()
@@ -308,6 +356,42 @@ def create_scheduled_post_record(
         return res.data[0] if res.data else None
     except Exception:
         return None
+
+
+def list_due_ig_scheduled_posts(now_iso: str, limit: int = 20) -> list[dict]:
+    """Posts Instagram encore à publier dont l'échéance est atteinte (scheduled_time
+    <= now). Lus par le job `ig_publish`. Les plus anciens d'abord."""
+    try:
+        res = (
+            supabase_admin.table("scheduled_posts")
+            .select("*")
+            .eq("platform", "instagram")
+            .eq("status", "scheduled")
+            .lte("scheduled_time", now_iso)
+            .order("scheduled_time")
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+    except Exception:
+        return []
+
+
+def finalize_scheduled_post(
+    row_id: str, status: str, meta_post_id: Optional[str] = None
+) -> None:
+    """Met à jour une planification par sa PK (`id`) : statut + éventuel meta_post_id.
+    Adressage par PK car un post IG planifié n'a pas encore de meta_post_id à la
+    création (contrairement à `set_scheduled_post_status`, keyé par meta_post_id)."""
+    if not row_id:
+        return
+    patch: dict = {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if meta_post_id:
+        patch["meta_post_id"] = meta_post_id
+    try:
+        supabase_admin.table("scheduled_posts").update(patch).eq("id", row_id).execute()
+    except Exception:
+        pass
 
 
 def list_scheduled_post_records(user_id: str, page_id: str) -> list[dict]:
@@ -405,6 +489,14 @@ def upsert_fb_breakdowns(rows: list[dict]) -> None:
         )
 
 
+def upsert_fb_platform_insights(rows: list[dict]) -> None:
+    """Insights niveau ad splittés par plateforme (Facebook / Instagram / …)."""
+    if rows:
+        _upsert_chunked(
+            "fb_insights_platform_daily", rows, "ad_account_id,ad_id,date,platform"
+        )
+
+
 def get_fb_sync_state(ad_account_id: str) -> Optional[dict]:
     res = (
         supabase_admin.table("fb_sync_state")
@@ -474,6 +566,35 @@ def rpc_fb_ad_agg(
 
 def rpc_fb_timeseries(account_id: str, start: str, end: str) -> list[dict]:
     return _rpc("fb_timeseries", {"p_account": account_id, "p_start": start, "p_end": end})
+
+
+# ── Variantes filtrées par plateforme (Facebook / Instagram) ─────────────────
+
+
+def rpc_fb_summary_platform(account_id: str, start: str, end: str, platform: str) -> dict:
+    rows = _rpc(
+        "fb_summary_platform",
+        {"p_account": account_id, "p_start": start, "p_end": end, "p_platform": platform},
+    )
+    return rows[0] if rows else {}
+
+
+def rpc_fb_campaign_agg_platform(
+    account_id: str, start: str, end: str, platform: str
+) -> list[dict]:
+    return _rpc(
+        "fb_campaign_agg_platform",
+        {"p_account": account_id, "p_start": start, "p_end": end, "p_platform": platform},
+    )
+
+
+def rpc_fb_timeseries_platform(
+    account_id: str, start: str, end: str, platform: str
+) -> list[dict]:
+    return _rpc(
+        "fb_timeseries_platform",
+        {"p_account": account_id, "p_start": start, "p_end": end, "p_platform": platform},
+    )
 
 
 def rpc_fb_breakdown(account_id: str, start: str, end: str, btype: str) -> list[dict]:
@@ -609,6 +730,19 @@ def update_fb_campaign_status(campaign_id: str, status: str) -> None:
         supabase_admin.table("fb_campaigns").update(
             {"status": status}
         ).eq("id", campaign_id).execute()
+    except Exception:
+        pass
+
+
+def update_fb_ad_status(ad_id: str, status: str) -> None:
+    """Met à jour le statut d'une ad dans le cache (fb_ads) pour que le panneau de
+    détail (onglet Ads, lu via fb_ad_agg) reflète immédiatement un activer/pause,
+    sans attendre le prochain sync. Best-effort : un échec de cache ne doit pas
+    faire échouer l'action Meta réussie."""
+    try:
+        supabase_admin.table("fb_ads").update(
+            {"status": status}
+        ).eq("id", ad_id).execute()
     except Exception:
         pass
 

@@ -56,6 +56,24 @@ MESSAGING_TYPES = {
 APP_INSTALL_TYPES = {"mobile_app_install", "app_install", "omni_app_install"}
 LINK_CLICK_TYPES = {"link_click"}
 LANDING_PAGE_VIEW_TYPES = {"landing_page_view"}
+# Étapes du tunnel e-commerce + engagement social (variantes web + omni).
+ADD_TO_CART_TYPES = {
+    "add_to_cart",
+    "offsite_conversion.fb_pixel_add_to_cart",
+    "omni_add_to_cart",
+}
+INITIATE_CHECKOUT_TYPES = {
+    "initiate_checkout",
+    "offsite_conversion.fb_pixel_initiate_checkout",
+    "omni_initiated_checkout",
+}
+POST_REACTION_TYPES = {"post_reaction"}
+COMMENT_TYPES = {"comment"}
+SHARE_TYPES = {"post"}  # chez Meta, action_type "post" = partages
+SAVE_TYPES = {"onsite_conversion.post_save"}
+# Vues vidéo 3 s : chez Meta, l'action_type "video_view" = vues de 3 secondes.
+# Remplace le champ dédié `video_3_sec_watched_actions` (retiré de l'API v21).
+VIDEO_VIEW_TYPES = {"video_view"}
 
 
 def extract_conversion_columns(actions: Any, action_values: Any) -> dict[str, float]:
@@ -65,12 +83,57 @@ def extract_conversion_columns(actions: Any, action_values: Any) -> dict[str, fl
         "purchases": _sum_actions(actions, PURCHASE_TYPES),
         "revenue": round(_sum_actions(action_values, PURCHASE_TYPES), 2),
         "leads": _sum_actions(actions, LEAD_TYPES),
+        # Vues vidéo 3 s reconstruites depuis `actions` (champ dédié retiré en v21).
+        "video_3s": _sum_actions(actions, VIDEO_VIEW_TYPES),
         "post_engagement": _sum_actions(actions, POST_ENGAGEMENT_TYPES),
         "messaging_started": _sum_actions(actions, MESSAGING_TYPES),
         "app_installs": _sum_actions(actions, APP_INSTALL_TYPES),
         "link_clicks": _sum_actions(actions, LINK_CLICK_TYPES),
         "landing_page_views": _sum_actions(actions, LANDING_PAGE_VIEW_TYPES),
+        # Tunnel e-commerce + engagement social (métriques additionnelles Meta Ads).
+        "add_to_cart": _sum_actions(actions, ADD_TO_CART_TYPES),
+        "initiate_checkout": _sum_actions(actions, INITIATE_CHECKOUT_TYPES),
+        "post_reactions": _sum_actions(actions, POST_REACTION_TYPES),
+        "post_comments": _sum_actions(actions, COMMENT_TYPES),
+        "post_shares": _sum_actions(actions, SHARE_TYPES),
+        "post_saves": _sum_actions(actions, SAVE_TYPES),
     }
+
+
+# ─── Métriques vidéo ──────────────────────────────────────────────────────────
+# Meta renvoie chaque métrique vidéo comme une LISTE de {action_type, value}
+# (souvent un seul élément `video_view`). Contrairement à actions/action_values,
+# on ne filtre PAS par action_type : le champ ne contient que la métrique voulue.
+
+# Champs insights bruts demandés à Meta → colonne stockée dans fb_insights_daily.
+# NB : `video_3_sec_watched_actions` a été RETIRÉ de l'API Marketing (déprécié
+# ~v13, invalide en v21 → erreur `(#100) … not valid for fields param` qui
+# faisait échouer TOUT le sync insights). La colonne `video_3s` est désormais
+# reconstruite depuis l'action `video_view` (cf. VIDEO_VIEW_TYPES ci-dessus),
+# qui est la vue vidéo 3 s canonique de Meta et reste renvoyée par `actions`.
+VIDEO_SOURCE_FIELDS: dict[str, str] = {
+    "video_thruplay_watched_actions": "thruplays",
+    "video_p25_watched_actions": "video_p25",
+    "video_p50_watched_actions": "video_p50",
+    "video_p75_watched_actions": "video_p75",
+    "video_p100_watched_actions": "video_p100",
+    "video_play_actions": "video_plays",
+}
+
+
+def sum_value_list(rows: Any) -> float:
+    """Somme les `value` d'un champ Meta renvoyé comme liste de {action_type,
+    value} (video_*_watched_actions, outbound_clicks…)."""
+    if not isinstance(rows, list):
+        return 0.0
+    return round(
+        sum(_safe_float(a.get("value")) for a in rows if isinstance(a, dict)), 2
+    )
+
+
+def extract_video_columns(row: dict) -> dict[str, float]:
+    """Extrait les colonnes vidéo depuis un dict {champ Meta: liste brute}."""
+    return {col: sum_value_list(row.get(src)) for src, col in VIDEO_SOURCE_FIELDS.items()}
 
 
 # ─── Métrique de performance par objectif ─────────────────────────────────────
