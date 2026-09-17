@@ -14,6 +14,13 @@ SMARTDB_BASE_URL = os.environ.get("SMARTDB_BASE_URL", "https://api.tybotflow.com
 SMARTDB_API_KEY = os.environ.get("SMARTDB_API_KEY", "")
 SMARTDB_BASE_ID = os.environ.get("SMARTDB_BASE_ID", "pmrlw1xde7g9e")
 
+# ─── Table Creative Ideas (SmartDB NocoDB) ───────────────────────────────────
+CREATIVE_IDEAS_TABLE_URL = os.environ.get(
+    "CREATIVE_IDEAS_TABLE_URL",
+    "https://api.tybotflow.com/api/v1/smart-db/tables/myqgf3eub7f7gtf/records",
+)
+CREATIVE_IDEAS_API_KEY = os.environ.get("CREATIVE_IDEAS_API_KEY", "")
+
 # Anciennes variables Supabase — conservées optionnelles (plus requises au boot).
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
