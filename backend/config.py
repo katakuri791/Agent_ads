@@ -1,5 +1,6 @@
 import os
 import secrets
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -14,13 +15,20 @@ SMARTDB_BASE_URL = os.environ.get("SMARTDB_BASE_URL", "https://api.tybotflow.com
 SMARTDB_API_KEY = os.environ.get("SMARTDB_API_KEY", "")
 SMARTDB_BASE_ID = os.environ.get("SMARTDB_BASE_ID", "pmrlw1xde7g9e")
 
+# ─── Table Creative Ideas (SmartDB NocoDB) ───────────────────────────────────
+CREATIVE_IDEAS_TABLE_URL = os.environ.get(
+    "CREATIVE_IDEAS_TABLE_URL",
+    "https://api.tybotflow.com/api/v1/smart-db/tables/myqgf3eub7f7gtf/records",
+)
+CREATIVE_IDEAS_API_KEY = os.environ.get("CREATIVE_IDEAS_API_KEY", "")
+
 # Anciennes variables Supabase — conservées optionnelles (plus requises au boot).
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 
 JWT_SECRET = os.environ.get("JWT_SECRET") or os.environ.get(
     "SUPABASE_JWT_SECRET"
@@ -52,6 +60,63 @@ CLIENT_AUTH_URL = os.environ.get(
     "CLIENT_AUTH_URL", "https://api.tybotflow.com/api/v1/auth/login"
 )
 CLIENT_AUTH_TOKEN = os.environ.get("CLIENT_AUTH_TOKEN", "")
+
+# ─── Workspace tybotflow (liste des agents conversationnels) ──────────────────
+# Le workspace regroupe les « smart services » (agents) de l'organisation. On
+# interroge `CHATBOT_WORKSPACES_URL?workspace_id=WORKSPACE_ID` pour en extraire
+# les `bot_id` (ex. "fizzy") que l'utilisateur peut cibler via `@nom` dans le chat.
+# Ni l'URL ni l'id ne sont des secrets (l'appel est authentifié par le token de
+# l'utilisateur, transmis en Bearer).
+# Pas de défaut en dur : un id de workspace codé ici marcherait en silence avec la
+# mauvaise valeur si `.env` l'oublie (le piège déjà connu avec CLIENT_AUTH_URL).
+# Vide → `list_agents()` refuse l'appel plutôt que d'interroger un autre workspace.
+WORKSPACE_ID = os.environ.get("WORKSPACE_ID", "")
+# L'id du workspace est un segment d'URL (…/getAllChatbotsOfWorkspace/63), pas un
+# paramètre de requête.
+CHATBOT_WORKSPACES_URL = os.environ.get(
+    "CHATBOT_WORKSPACES_URL",
+    "https://api.tybotflow.com/api/v1/chatbots/getAllChatbotsOfWorkspace",
+)
+
+# Agents adressables dans le chat. « Meta_ads » est le nôtre (cf. backend/agent.py,
+# AGENT_ID) ; les autres vivent sur la plateforme du client et sont atteints par
+# `@nom`. Liste en dur plutôt qu'un appel au workspace : distinguer « identité
+# d'agent » de « compte Meta » arrive à CHAQUE message et ne doit jamais dépendre
+# du réseau.
+# ponytail: la peupler depuis workspace.list_agents() quand les agents changeront
+# sans redéploiement.
+KNOWN_AGENT_IDS = tuple(
+    a.strip()
+    for a in os.environ.get(
+        "KNOWN_AGENT_IDS",
+        "Meta_ads,fizzy,social-media-chat,smart-blog,image-generator",
+    ).split(",")
+    if a.strip()
+)
+
+
+# ─── UCC (agents externes de la plateforme cliente, ex. « fizzy ») ───────────
+# API webhook : le POST n'a pas de réponse synchrone, le bot répond via
+# l'événement WebSocket `bot-message` dans la room = l'id de conversation.
+# Pas de défaut en dur : une URL devinée échouerait silencieusement à l'exécution.
+# Vide → le chat UCC répond une erreur lisible au lieu d'appeler dans le vide.
+UCC_SEND_URL = os.environ.get("UCC_SEND_URL", "")
+UCC_WS_URL = os.environ.get("UCC_WS_URL", "")
+UCC_HOST = os.environ.get("UCC_HOST", "https://app.tybotflow.com")
+START_CONVERSATION_URL = os.environ.get(
+    "START_CONVERSATION_URL",
+    "https://api.tybotflow.com/api/v1/conversations/start-conversation",
+)
+
+
+def is_agent_id(value: Optional[str]) -> bool:
+    """Vrai si `value` nomme un agent conversationnel (et non un compte Meta).
+
+    Insensible à la casse : le `@fizzy` tapé par l'utilisateur et le `bot_id`
+    renvoyé par le workspace n'ont pas forcément la même casse.
+    """
+    v = (value or "").strip().lower()
+    return bool(v) and v in {a.lower() for a in KNOWN_AGENT_IDS}
 
 # Observabilité — Sentry. Vide en dev local (init désactivée, aucun appel réseau).
 SENTRY_DSN = os.environ.get("SENTRY_DSN", "")

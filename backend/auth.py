@@ -327,11 +327,13 @@ def signup(email: str, password: str, full_name: Optional[str]) -> tuple[str, st
 
 def login(
     email: str, password: str
-) -> tuple[str, Optional[str], UserPublic, Optional[dict]]:
-    """Renvoie (access_token, refresh_token, user, client_response).
+) -> tuple[str, Optional[str], UserPublic, Optional[dict], Optional[str]]:
+    """Renvoie (access_token, refresh_token, user, client_response, client_token).
 
     `client_response` = le corps BRUT de l'endpoint /auth/login du client (login
-    délégué) ; None pour un login local."""
+    délégué) ; `client_token` = le token tybotflow déjà extrait de ce corps (pour
+    les appels directs à des services tybotflow, ex. UCC) ; les deux sont None
+    pour un login local."""
     # Login délégué : si l'URL du client est configurée, on authentifie chez lui
     # (tybotflow). Les utilisateurs vivent CHEZ tybotflow, pas dans SmartDB : on ne
     # cherche/crée donc AUCUNE ligne locale. Sinon, login 100 % local (historique).
@@ -356,7 +358,7 @@ def login(
         # Pas de refresh token pour un user délégué : sa rotation lirait la table
         # `users` (SmartDB) qui n'existe pas ici. La session dure JWT_EXPIRES_HOURS
         # puis re-login. (À brancher sur le refresh tybotflow plus tard si besoin.)
-        return access, None, public, identity.get("raw")
+        return access, None, public, identity.get("raw"), identity.get("token")
 
     res = (
         supabase_admin.table("users")
@@ -372,7 +374,7 @@ def login(
         raise HTTPException(status_code=401, detail="Invalid email or password")
     access = create_jwt(row["id"])
     refresh = create_refresh_token(row["id"])
-    return access, refresh, _user_row_to_public(row), None
+    return access, refresh, _user_row_to_public(row), None, None
 
 
 def _load_user(user_id: str) -> UserPublic:

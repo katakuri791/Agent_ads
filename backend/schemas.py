@@ -1,5 +1,7 @@
 from typing import Any, Literal, Optional, Union
 
+from .config import is_agent_id
+
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -39,6 +41,18 @@ class AgentInfo(BaseModel):
     description: str
 
 
+class AgentListItem(BaseModel):
+    """Agent conversationnel du workspace tybotflow (cf. `backend/workspace.py`).
+
+    `id` = le `bot_id` de l'agent (ex. "fizzy"), `name` = son libellé, cible du
+    `@mention` dans le chat. ⚠️ Ce `bot_id` désigne un AGENT, pas le compte Meta
+    (le champ `bot_id` de `/chat/botpress` vaut, lui, `account_id`).
+    """
+
+    id: str
+    name: str
+
+
 class UserUpdateRequest(BaseModel):
     full_name: Optional[str] = None
     first_name: Optional[str] = None
@@ -56,6 +70,11 @@ class AuthResponse(BaseModel):
     # l'endpoint /auth/login du client (access_token, userData, …) pour que
     # l'appelant dispose de toutes ses données. Vide (None) pour un login local.
     client_response: Optional[dict[str, Any]] = None
+    # Token brut tybotflow, déjà extrait de client_response (cf. extract_identity) :
+    # évite au frontend de deviner la clé dans client_response. Utilisé pour les
+    # appels directs à des services tybotflow (ex. UCC) avec le même token que le
+    # login. None pour un login local.
+    client_token: Optional[str] = None
 
 
 class RefreshRequest(BaseModel):
@@ -268,7 +287,15 @@ class ChatRequest(BaseModel):
     def _accept_botpress_aliases(self) -> "ChatRequest":
         if not (self.message or "").strip() and (self.text or "").strip():
             self.message = self.text
-        if not (self.account_id or "").strip() and (self.bot_id or "").strip():
+        # `bot_id` ne se replie en `account_id` que s'il désigne bien un compte
+        # Meta. Quand il nomme un AGENT conversationnel (« Meta_ads », « fizzy »),
+        # il dit à QUI on parle : le replier ferait chercher un compte Meta nommé
+        # « fizzy » (introuvable → compte par défaut silencieux).
+        if (
+            not (self.account_id or "").strip()
+            and (self.bot_id or "").strip()
+            and not is_agent_id(self.bot_id)
+        ):
             self.account_id = self.bot_id
         if not (self.message or "").strip():
             raise ValueError("`message` (ou `text`) est requis.")
@@ -307,16 +334,24 @@ def _reject_placeholder(value: str, field: str) -> str:
 
 
 class BotpressPayload(BaseModel):
-    # `user_id` = identité de la personne qui parle → OBLIGATOIRE (le fil est résolu
-    # à partir de lui, cf. chat_botpress). Non vide requis (min_length=1).
-    user_id: str = Field(..., min_length=1)
-    conversation_id: Optional[str] = None  # IGNORÉ (le fil vient du user_id)
+    # `user_id` = identité de la personne qui parle, fournie par un appelant EXTERNE
+    # (Botpress) qui n'a pas de JWT chez nous. Le fil est résolu à partir de lui.
+    # ⚠️ Optionnel : le frontend est déjà authentifié, son identité vient du token.
+    # L'exiger le forcerait à s'auto-déclarer, et la moindre divergence avec le JWT
+    # créerait des fils invisibles depuis /conversations (cloisonné par user.id).
+    user_id: Optional[str] = None
+    # Fil ciblé. Vide → on reprend la dernière conversation de `user_id` (cas
+    # Botpress, qui ne suit pas les fils). Fourni → honoré (le frontend a un
+    # sélecteur de conversations).
+    conversation_id: Optional[str] = None
     channel: str = "web"                   # toujours "web" côté Botpress (ignoré)
 
     @field_validator("user_id")
     @classmethod
-    def _no_placeholder_user_id(cls, v: str) -> str:
-        return _reject_placeholder(v, "user_id")
+    def _no_placeholder_user_id(cls, v: Optional[str]) -> Optional[str]:
+        # Absent = frontend authentifié (identité tirée du JWT). Fourni = appelant
+        # externe : on refuse alors le placeholder Swagger « string ».
+        return _reject_placeholder(v, "user_id") if v is not None else None
 
 
 class BotpressChatRequest(BaseModel):
@@ -334,6 +369,14 @@ class BotpressChatRequest(BaseModel):
     bot_id: str = Field(
         ..., min_length=1, validation_alias=AliasChoices("bot_id", "bot_Id")
     )
+    # Compte Meta ciblé. Historiquement porté par `bot_id` — mais depuis que
+    # `bot_id` peut nommer un AGENT (« fizzy »), il faut un champ distinct pour
+    # que le frontend transmette le compte sélectionné dans l'UI. Absent → compte
+    # par défaut de l'utilisateur (comportement inchangé pour Botpress).
+    account_id: Optional[str] = None
+    # Image jointe (upload préalable via /chat/upload-image). Botpress ne s'en
+    # sert pas ; le frontend, si.
+    attached_image_hash: Optional[str] = None
     payload: BotpressPayload
 
     @field_validator("text")
@@ -353,14 +396,6 @@ class BotpressChatRequest(BaseModel):
         return _reject_placeholder(v, "bot_id")
 
 
-class BotpressChatResponse(BaseModel):
-    # `responses` = liste hétérogène de messages Botpress (text / single-choice /
-    # card…). On renvoie aussi `conversation_id` pour que Botpress le repasse au
-    # prochain tour (continuité du fil).
-    conversation_id: str
-    responses: list[dict[str, Any]] = []
-
-
 class ToolCallInfo(BaseModel):
     name: str
     status: str
@@ -372,6 +407,31 @@ class ChatResponse(BaseModel):
     reply: str
     tool_calls: list[ToolCallInfo] = []
     structured: Optional[StructuredOutput] = None
+    # Agents UCC uniquement : la room WebSocket à rejoindre pour recevoir la
+    # réponse du bot (événement `bot-message`). UCC étant un webhook, `reply` est
+    # vide dans ce cas. None pour notre agent Meta Ads (réponse synchrone).
+    ucc_conversation_id: Optional[str] = None
+
+
+class BotpressChatResponse(BaseModel):
+    # `responses` = liste hétérogène de messages Botpress (text / single-choice /
+    # card…). On renvoie aussi `conversation_id` pour que Botpress le repasse au
+    # prochain tour (continuité du fil).
+    conversation_id: str
+    responses: list[dict[str, Any]] = []
+    # Champs additionnels pour que le frontend puisse utiliser CET endpoint sans
+    # rien perdre par rapport à `/chat` : Botpress ignore ce qu'il ne connaît pas.
+    #  • `reply`      : le texte brut, déjà présent dans `responses[0]`, mais sans
+    #                   avoir à fouiller le tableau ;
+    #  • `structured` : les cartes interactives (QCM de campagne) — `responses`
+    #                   les aplatit en `single-choice`, ce qui perd l'état cliquable ;
+    #  • `tool_calls` : ce que l'agent a exécuté → le front invalide ses caches
+    #                   après une action mutante (création de campagne…).
+    reply: str = ""
+    tool_calls: list[ToolCallInfo] = []
+    structured: Optional[StructuredOutput] = None
+    # Room WebSocket à rejoindre quand l'agent ciblé est un bot UCC (cf. ChatResponse).
+    ucc_conversation_id: Optional[str] = None
 
 
 class ConversationSummary(BaseModel):

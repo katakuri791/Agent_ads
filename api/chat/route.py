@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
 
 from api.chat import endpoint
 from api.deps import get_current_user, get_user_or_public
@@ -46,18 +46,26 @@ def campaign_questionnaire(
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(body: ChatRequest, user: UserPublic = Depends(get_user_or_public)) -> ChatResponse:
+def chat(
+    body: ChatRequest,
+    x_client_token: Optional[str] = Header(default=None, alias="X-Client-Token"),
+    user: UserPublic = Depends(get_user_or_public),
+) -> ChatResponse:
     # Endpoint PUBLIC : JWT présent (frontend) → cet utilisateur ; aucun credential
     # (Botpress / extérieur) → utilisateur de démo fixe. L'appelant externe identifie
     # la personne via `body.user_id`. Voir get_user_or_public.
-    return endpoint.chat(body, user)
+    # `X-Client-Token` = token tybotflow du login délégué, requis seulement pour
+    # parler à un agent externe (UCC).
+    return endpoint.chat(body, user, x_client_token)
 
 
 @router.post("/chat/botpress", response_model=BotpressChatResponse)
 def chat_botpress(
-    body: BotpressChatRequest, user: UserPublic = Depends(get_user_or_public)
+    body: BotpressChatRequest,
+    x_client_token: Optional[str] = Header(default=None, alias="X-Client-Token"),
+    user: UserPublic = Depends(get_user_or_public),
 ) -> BotpressChatResponse:
     # Variante PUBLIQUE au format Botpress : accepte l'entrée `input.txt`
     # (type/text/bot_Id/payload) et renvoie le tableau `responses`. Le `/chat`
     # ci-dessus (utilisé par le frontend) reste inchangé.
-    return endpoint.chat_botpress(body, user)
+    return endpoint.chat_botpress(body, user, x_client_token)

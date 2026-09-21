@@ -24,12 +24,15 @@ def signup(body: SignupRequest) -> AuthResponse:
 
 
 def login(body: LoginRequest) -> AuthResponse:
-    access, refresh, user, client_response = auth_login(body.email, body.password)
+    access, refresh, user, client_response, client_token = auth_login(
+        body.email, body.password
+    )
     return AuthResponse(
         access_token=access,
         refresh_token=refresh,
         user=user,
         client_response=client_response,
+        client_token=client_token,
     )
 
 
