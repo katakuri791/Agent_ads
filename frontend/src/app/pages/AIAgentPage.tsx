@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Check, ChevronRight, Film, Image as ImageIcon, ImagePlus, ListChecks, Loader2, Megaphone, MapPin, Paperclip, Plus, Send, Sparkles, X,
+  AlertTriangle, Bot, Check, ChevronDown, ChevronRight, Film, Image as ImageIcon, ImagePlus, ListChecks, Loader2, Megaphone, MapPin, Paperclip, Plus, Send, Sparkles, X,
 } from "lucide-react";
 import {
   api, ApiError, type StructuredOutput, type CampaignBriefStructured, type InsightAnswerStructured,
   type CampaignQuestionnaireStructured, type CampaignCreatedStructured, type QuestionT, type GeoLocation,
 } from "../lib/api";
+import * as ucc from "../lib/ucc";
+import * as chatHistory from "../lib/chatHistory";
+import type { ArchivedConversation } from "../lib/chatHistory";
+import { getCachedUser } from "../lib/auth";
 import { MSButton } from "../components/ms/primitives";
 import { useAccount } from "../providers/AccountProvider";
 import { useInvalidateMetaData } from "../hooks/useMetaData";
@@ -21,7 +25,7 @@ function cleanMarkdown(text: string): string {
     .replace(/\*\*/g, "");
 }
 
-type ChatMsg = { role: "user" | "ai"; text: string; time: string; structured?: StructuredOutput | null; imageHash?: string | null };
+type ChatMsg = { role: "user" | "ai"; text: string; time: string; structured?: StructuredOutput | null; imageHash?: string | null; uccOptions?: ucc.UccOption[]; uccImageUrl?: string };
 const WELCOME_MSG: ChatMsg = {
   role: "ai",
   text: "Bonjour 👋 — je suis votre agent MetaScope. Je peux créer des campagnes Meta, lire vos données de Page Facebook et publier des posts. Que souhaitez-vous faire ?",
@@ -33,7 +37,7 @@ const SUGGESTED_PROMPTS = [
   "Liste mes 5 dernières publications",
   "Analyse les performances de mes campagnes des 7 derniers jours",
 ];
-type ConvSummary = { id: string; title: string | null; created_at: string };
+type ConvSummary = ArchivedConversation;
 
 function CampaignBriefCard({ brief }: { brief: CampaignBriefStructured }) {
   return (
@@ -462,20 +466,145 @@ function QuestionnaireCard({ q, locked, accountId, onSubmit }: {
   );
 }
 
+/** Notre agent LangGraph (cf. backend/agent.py, AGENT_ID). Tout autre agent est
+ *  externe (UCC) et se parle en direct, sans passer par notre backend. */
+const OUR_AGENT_ID = "fizzy";
+
+const nowTime = () =>
+  new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+/** Détache un « @nom » de tête et le résout en agent connu.
+ *
+ * « @fizzy salut » → { agent: "fizzy", text: "salut" }. Le `@` ne compte que s'il
+ * ouvre le message ET nomme un agent de la liste : sinon c'est du texte normal
+ * (une adresse e-mail ou un « @toi » au fil de la phrase ne doit rien changer).
+ * Un « @fizzy » seul change d'agent sans envoyer de message (text vide).
+ */
+function splitAgentMention(
+  raw: string,
+  agents: { id: string; name: string }[],
+): { agent: string | null; text: string } {
+  const m = /^@([\w.-]+)\s*/.exec(raw);
+  if (!m) return { agent: null, text: raw };
+  const typed = m[1].toLowerCase();
+  const hit = agents.find((a) => a.id.toLowerCase() === typed || a.name.toLowerCase() === typed);
+  if (!hit) return { agent: null, text: raw };
+  return { agent: hit.id, text: raw.slice(m[0].length) };
+}
+
 export function AIAgentPage({ onNavigate }: { onNavigate?: (id: string) => void } = {}) {
   const { selectedAccountId } = useAccount();
   const invalidateMeta = useInvalidateMetaData();
   const [messages, setMessages] = useState<ChatMsg[]>([WELCOME_MSG]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConvSummary[]>([]);
+  // true = l'écran affiche un fil archivé (lecture seule, cf. chatHistory.ts) ;
+  // false = le fil courant, celui réellement relié à la room UCC en cours.
+  const [viewingArchive, setViewingArchive] = useState(false);
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
   const [attachedImage, setAttachedImage] = useState<{ hash: string; previewUrl: string; name: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Agent conversationnel courant. `null` = notre agent Meta Ads par défaut.
+  // On en change en écrivant « @nom » en tête de message (cf. splitAgentMention).
+  const [agentId, setAgentId] = useState<string | null>(null);
+  // Agents du workspace tybotflow, pour valider le « @nom ». Vide si le login
+  // n'était pas délégué (pas de token client) ou si le workspace est injoignable.
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
+
+  // Index surligné dans le menu « @ ». -1 = menu fermé.
+  const [mentionIdx, setMentionIdx] = useState(-1);
+  // Menu du bouton sélecteur d'agent (alternative visible au « @ »).
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+
+  useEffect(() => {
+    // Best-effort : sans cette liste, « @nom » reste du texte normal.
+    api.agents().then(setAgents).catch(() => setAgents([]));
+  }, []);
+
+  // Tous les agents vivent sur UCC : on ouvre (ou retrouve) la conversation et on
+  // écoute sa room. UCC étant un webhook, c'est le SEUL moyen de recevoir les
+  // réponses. Par défaut, l'agent est le nôtre (Meta_ads).
+  const uccBot = agentId || OUR_AGENT_ID;
+  useEffect(() => {
+    if (!uccBot) return;
+    const userId = getCachedUser()?.id;
+    if (!userId) return;
+
+    let close: (() => void) | undefined;
+    let cancelled = false;
+    ucc
+      .startConversation(uccBot, userId)
+      .then((room) => {
+        // Le composant a pu changer d'agent pendant l'appel réseau.
+        if (cancelled) return;
+        close = ucc.listen(room, (m) => {
+          setTyping(false);
+          setMessages((prev) => [...prev, { role: "ai", text: m.text, time: nowTime(), uccOptions: m.options, uccImageUrl: m.imageUrl }]);
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMessages((prev) => [...prev, { role: "ai", text: "⚠️ Cet agent est injoignable pour le moment.", time: nowTime() }]);
+      });
+
+    return () => { cancelled = true; close?.(); };
+  }, [uccBot]);
+
+  // Clic sur une option (bouton single-choice) : le label choisi s'affiche
+  // IMMÉDIATEMENT comme un message "toi" — même geste qu'un envoi texte libre,
+  // juste déclenché par un clic plutôt que par la touche Entrée. Sa valeur part
+  // au bot comme le ferait un message texte.
+  const pickOption = async (opt: ucc.UccOption) => {
+    if (typing) return;
+    setMessages((prev) => [...prev, { role: "user", text: opt.label, time: nowTime() }]);
+    setTyping(true);
+    try {
+      await ucc.sendMessage(uccBot, opt.value, getCachedUser()?.id || "");
+    } catch {
+      setTyping(false);
+      setMessages((prev) => [...prev, { role: "ai", text: "⚠️ Message non envoyé. Réessaie.", time: nowTime() }]);
+    }
+  };
+
+  // Un clic ailleurs referme le menu d'agents (sinon il reste ouvert par-dessus
+  // le fil). Échap fait de même.
+  useEffect(() => {
+    if (!agentMenuOpen) return;
+    const close = () => setAgentMenuOpen(false);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", onKey); };
+  }, [agentMenuOpen]);
+
+  // Menu d'agents : ouvert dès que le message commence par « @ », filtré au fil
+  // de la frappe. Dérivé de `input` — rien à synchroniser.
+  const mentionQuery = /^@([\w.-]*)$/.exec(input)?.[1]?.toLowerCase() ?? null;
+  const mentionMatches =
+    mentionQuery === null
+      ? []
+      : agents.filter(
+          (a) =>
+            a.id.toLowerCase().startsWith(mentionQuery) ||
+            a.name.toLowerCase().startsWith(mentionQuery),
+        );
+  const mentionOpen = mentionMatches.length > 0;
+  // La frappe change la liste : un index gardé d'avant surlignerait la mauvaise
+  // ligne (ou dépasserait). On resurligne le premier.
+  useEffect(() => { setMentionIdx(mentionMatches.length > 0 ? 0 : -1); }, [mentionQuery, mentionMatches.length]);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Complète « @fiz » en « @fizzy » et rend la main à la saisie du message.
+  const pickAgent = (a: { id: string; name: string }) => {
+    setInput(`@${a.id} `);
+    setMentionIdx(-1);
+    taRef.current?.focus();
+  };
 
   const autoResize = useCallback(() => {
     const el = taRef.current; if (!el) return;
@@ -484,30 +613,18 @@ export function AIAgentPage({ onNavigate }: { onNavigate?: (id: string) => void 
   useEffect(() => { autoResize(); }, [input, autoResize]);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, typing]);
 
-  const mapMessages = (rows: Array<{ role: string; content: string; created_at: string; metadata: Record<string, unknown> }>): ChatMsg[] =>
-    rows.filter((r) => r.role === "user" || r.role === "assistant").map((r) => {
-      const meta: any = r.metadata || {};
-      const structured: StructuredOutput | undefined = meta.structured && (meta.structured.kind === "campaign_brief" || meta.structured.kind === "insight_answer" || meta.structured.kind === "campaign_questionnaire") ? meta.structured : undefined;
-      return { role: r.role === "user" ? "user" : "ai", text: r.content, time: new Date(r.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), structured, imageHash: meta.image_hash };
-    });
-
-  const loadConversation = async (conv: ConvSummary) => {
-    try {
-      const rows = await api.getMessages(conv.id);
-      const mapped = mapMessages(rows);
-      setMessages(mapped.length > 0 ? mapped : [{ ...WELCOME_MSG }]);
-      setConversationId(conv.id);
-    } catch { /* ignore */ }
+  // Un fil archivé se réaffiche tel qu'il était figé, mais il n'est PAS relié à
+  // la room UCC réelle (UCC ne connaît qu'un seul fil actif par agent — cf.
+  // chatHistory.ts). Le rouvrir est donc une consultation en lecture seule.
+  const loadConversation = (conv: ArchivedConversation) => {
+    setMessages(conv.messages.length > 0 ? conv.messages : [{ ...WELCOME_MSG }]);
+    setConversationId(conv.id);
+    setViewingArchive(true);
   };
 
+  // Liste locale au chargement (rien à attendre du réseau : c'est du localStorage).
   useEffect(() => {
-    api.listConversations().then(async (list) => {
-      setConversations(list);
-      if (list.length === 0) return;
-      const rows = await api.getMessages(list[0].id);
-      const mapped = mapMessages(rows);
-      if (mapped.length > 0) { setMessages(mapped); setConversationId(list[0].id); }
-    }).catch(() => { /* ignore */ });
+    setConversations(chatHistory.listArchived());
   }, []);
 
   const onFileChosen = async (file: File | null) => {
@@ -515,9 +632,14 @@ export function AIAgentPage({ onNavigate }: { onNavigate?: (id: string) => void 
     setUploadError(null); setUploading(true);
     const previewUrl = URL.createObjectURL(file);
     try {
-      const res = await api.uploadChatImage(file, selectedAccountId);
-      if (res.error || !res.image_hash) { setUploadError(res.error || "Upload failed."); URL.revokeObjectURL(previewUrl); return; }
-      setAttachedImage({ hash: res.image_hash, previewUrl, name: file.name });
+      // Photo ou vidéo : deux endpoints distincts côté Meta (hash vs video_id).
+      const isVideo = file.type.startsWith("video/");
+      const res = isVideo
+        ? await api.uploadChatVideo(file, selectedAccountId)
+        : await api.uploadChatImage(file, selectedAccountId);
+      const hash = isVideo ? (res as { video_id?: string }).video_id : (res as { image_hash?: string }).image_hash;
+      if (res.error || !hash) { setUploadError(res.error || "Upload failed."); URL.revokeObjectURL(previewUrl); return; }
+      setAttachedImage({ hash, previewUrl, name: file.name });
     } catch (e) {
       URL.revokeObjectURL(previewUrl);
       setUploadError(e instanceof ApiError ? e.message : "Upload failed.");
@@ -526,31 +648,52 @@ export function AIAgentPage({ onNavigate }: { onNavigate?: (id: string) => void 
   const removeAttachment = () => { if (attachedImage?.previewUrl) URL.revokeObjectURL(attachedImage.previewUrl); setAttachedImage(null); };
 
   const send = async (preset?: string) => {
-    const text = (preset ?? input).trim();
+    // Écrire pendant qu'on consulte une archive : elle n'est pas reliée à la
+    // room UCC réelle (cf. chatHistory.ts), donc on repart sur un fil neuf —
+    // comme un "New Chat" implicite — plutôt que d'envoyer dans le vide.
+    if (viewingArchive) { setMessages([{ ...WELCOME_MSG, time: nowTime() }]); setConversationId(null); setViewingArchive(false); }
+    const raw = (preset ?? input).trim();
+    // « @nom » en tête = changement d'agent. L'agent choisi reste actif pour les
+    // messages suivants, jusqu'au prochain « @ ».
+    const { agent: mentioned, text: stripped } = splitAgentMention(raw, agents);
+    const activeAgent = mentioned ?? agentId;
+    if (mentioned && mentioned !== agentId) setAgentId(mentioned);
+    const text = stripped.trim();
+    // « @fizzy » seul : on bascule d'agent, sans message vide à envoyer.
+    if (mentioned && !text && !attachedImage) {
+      const label = agents.find((a) => a.id === mentioned)?.name || mentioned;
+      setInput("");
+      setMessages((prev) => [...prev, { role: "ai", text: `Tu parles maintenant avec ${label}.`, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+      return;
+    }
     if ((!text && !attachedImage) || typing) return;
     const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const imageHash = attachedImage?.hash || null;
     setMessages((prev) => [...prev, { role: "user", text: text || "(image attached)", time: now, imageHash }]);
     setInput(""); removeAttachment(); setTyping(true);
+
+    // TOUS les agents passent par UCC, y compris Meta_ads : c'est la plateforme
+    // cliente qui les héberge. Notre backend n'est plus dans la boucle du chat.
+    // La réponse n'arrive PAS ici (UCC est un webhook) mais sur la room Socket.IO
+    // écoutée plus haut — d'où l'indicateur de frappe laissé actif.
     try {
-      const res = await api.chat(text || "(image attached)", conversationId || undefined, imageHash, selectedAccountId);
-      if (res.conversation_id !== conversationId) {
-        setConversationId(res.conversation_id);
-        setConversations((prev) => prev.some((c) => c.id === res.conversation_id) ? prev : [{ id: res.conversation_id, title: text.slice(0, 40) || null, created_at: new Date().toISOString() }, ...prev]);
-      }
-      setMessages((prev) => [...prev, { role: "ai", text: res.reply || "(no reply)", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), structured: res.structured || null }]);
-      // Une action mutante de l'agent (création de campagne, publication…) rend
-      // les données obsolètes → on invalide les caches TanStack Query.
-      const MUTATING = ["create_full_campaign", "post_to_facebook_page", "save_campaign_tree"];
-      if ((res.tool_calls || []).some((t) => MUTATING.includes(t.name))) invalidateMeta();
-    } catch (err) {
-      setMessages((prev) => [...prev, { role: "ai", text: `⚠️ ${err instanceof ApiError ? err.message : "Connection error."}`, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
-    } finally { setTyping(false); }
+      await ucc.sendMessage(activeAgent || OUR_AGENT_ID, text, getCachedUser()?.id || "");
+    } catch {
+      setTyping(false);
+      setMessages((prev) => [...prev, { role: "ai", text: "⚠️ Message non envoyé. Réessaie.", time: nowTime() }]);
+    }
   };
 
-  const newConversation = async () => {
-    setMessages([{ ...WELCOME_MSG, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
-    try { const conv = await api.createConversation(); setConversationId(conv.id); setConversations((prev) => [conv, ...prev]); } catch { setConversationId(null); }
+  const newConversation = () => {
+    // Le fil qu'on quitte est sauvegardé s'il contient un vrai échange — sinon
+    // (écran jamais utilisé, ou déjà une consultation d'archive) rien à garder.
+    if (!viewingArchive) {
+      chatHistory.archive(agentId || OUR_AGENT_ID, messages);
+      setConversations(chatHistory.listArchived());
+    }
+    setMessages([{ ...WELCOME_MSG, time: nowTime() }]);
+    setConversationId(null);
+    setViewingArchive(false);
   };
 
   // Affiche le QCM de création immédiatement (client-only, sans appel LLM) — le
@@ -603,11 +746,29 @@ export function AIAgentPage({ onNavigate }: { onNavigate?: (id: string) => void 
                   <div style={{ maxWidth: "78%" }}>
                     <div style={{ background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: "14px 14px 14px 4px", padding: "12px 15px", fontSize: 14, lineHeight: 1.55, color: "var(--tx-2)", whiteSpace: "pre-line" }}>
                       {cleanMarkdown(m.text)}
+                      {m.uccImageUrl && (
+                        <a href={m.uccImageUrl} target="_blank" rel="noreferrer" title="Voir en taille réelle"
+                          style={{ display: "block", marginTop: m.text ? 10 : 0 }}>
+                          <img src={m.uccImageUrl} alt="Image générée" loading="lazy"
+                            style={{ maxWidth: "100%", maxHeight: 320, borderRadius: 10, border: "1px solid var(--bd)", display: "block", cursor: "zoom-in" }} />
+                        </a>
+                      )}
                       {m.structured?.kind === "campaign_brief" && <CampaignBriefCard brief={m.structured} />}
                       {m.structured?.kind === "campaign_created" && <CampaignCreatedCard data={m.structured} onNavigate={onNavigate} />}
                       {m.structured?.kind === "insight_answer" && <InsightCard answer={m.structured} />}
                       {m.structured?.kind === "campaign_questionnaire" && (
                         <QuestionnaireCard q={m.structured} locked={i !== messages.length - 1 || typing} accountId={selectedAccountId} onSubmit={(msg) => send(msg)} />
+                      )}
+                      {m.uccOptions && m.uccOptions.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 10 }}>
+                          {m.uccOptions.map((opt, oi) => (
+                            <button key={oi} onClick={() => pickOption(opt)} disabled={typing || viewingArchive}
+                              title={viewingArchive ? "Fil archivé : consultation seule." : undefined}
+                              style={{ padding: "7px 13px", borderRadius: 999, border: "1px solid color-mix(in srgb, var(--accent) 31%, transparent)", background: "color-mix(in srgb, var(--accent) 9%, transparent)", color: "#7FB1F5", fontSize: 12.5, fontWeight: 600, cursor: typing || viewingArchive ? "default" : "pointer", opacity: viewingArchive ? 0.5 : 1, fontFamily: "IBM Plex Sans", transition: "all .15s", whiteSpace: "pre-line", textAlign: "left" }}>
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
                       )}
                     </div>
                   </div>
@@ -645,11 +806,64 @@ export function AIAgentPage({ onNavigate }: { onNavigate?: (id: string) => void 
                 <button key={i} onClick={() => send(c)} className="ms-chip" style={{ padding: "6px 12px", borderRadius: 999, border: "1px solid var(--bd)", background: "var(--surf-card)", color: "var(--tx-3)", fontSize: 12.5, cursor: "pointer", fontFamily: "IBM Plex Sans", transition: "all .15s" }}>"{c}"</button>
               ))}
             </div>
+            {mentionOpen && (
+              <div role="listbox" aria-label="Agents disponibles"
+                style={{ position: "relative", marginBottom: 8, background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 12, padding: 5, boxShadow: "0 8px 24px rgba(0,0,0,.28)", maxHeight: 220, overflowY: "auto" }}>
+                {mentionMatches.map((a, i) => (
+                  <button key={a.id} role="option" aria-selected={i === mentionIdx}
+                    onMouseEnter={() => setMentionIdx(i)}
+                    onClick={() => pickAgent(a)}
+                    style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, border: "none", cursor: "pointer", fontFamily: "IBM Plex Sans", background: i === mentionIdx ? "color-mix(in srgb, var(--accent) 13%, transparent)" : "transparent", color: "var(--tx)" }}>
+                    <Bot size={15} style={{ flexShrink: 0, color: "var(--accent)" }} />
+                    <span style={{ fontSize: 13.5, fontWeight: 600 }}>{a.name}</span>
+                    {a.name !== a.id && <span style={{ fontSize: 12, color: "var(--tx-dim)" }}>@{a.id}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* Sélecteur d'agent : même rôle que « @nom », mais visible en
+                permanence — il indique AUSSI avec qui on parle actuellement. */}
+            {agentMenuOpen && (
+              <div role="listbox" aria-label="Choisir un agent" onClick={(e) => e.stopPropagation()}
+                style={{ marginBottom: 8, background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 14, padding: 6, boxShadow: "0 12px 32px rgba(0,0,0,.34)", maxHeight: 260, overflowY: "auto" }}>
+                {agents.map((a) => {
+                  const active = (agentId || OUR_AGENT_ID) === a.id;
+                  return (
+                    <button key={a.id} role="option" aria-selected={active}
+                      onClick={() => { setAgentId(a.id); setAgentMenuOpen(false); taRef.current?.focus(); }}
+                      style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", padding: "10px 12px", borderRadius: 10, border: "none", cursor: "pointer", fontFamily: "IBM Plex Sans", background: active ? "color-mix(in srgb, var(--accent) 13%, transparent)" : "transparent", color: "var(--tx)" }}>
+                      <Bot size={16} style={{ flexShrink: 0, color: active ? "var(--accent)" : "var(--tx-3)" }} />
+                      <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{a.name}</span>
+                      {a.id === OUR_AGENT_ID && <span style={{ fontSize: 11.5, color: "var(--tx-dim)" }}>Par défaut</span>}
+                      {active && <Check size={15} style={{ color: "var(--accent)", flexShrink: 0 }} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div style={{ display: "flex", alignItems: "flex-end", gap: 10, background: "var(--bd)", borderRadius: 14, padding: 8 }}>
-              <button onClick={() => fileRef.current?.click()} disabled={uploading} title="Joindre une image" style={{ width: 38, height: 38, borderRadius: 10, border: "none", background: "transparent", color: uploading ? "var(--accent)" : "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{uploading ? <Loader2 size={18} className="animate-spin" /> : <Paperclip size={18} />}</button>
-              <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => onFileChosen(e.target.files?.[0] || null)} />
+              <button onClick={() => fileRef.current?.click()} disabled={uploading} title="Joindre une photo ou une vidéo" style={{ width: 38, height: 38, borderRadius: 10, border: "none", background: "transparent", color: uploading ? "var(--accent)" : "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{uploading ? <Loader2 size={18} className="animate-spin" /> : <Paperclip size={18} />}</button>
+              <input ref={fileRef} type="file" accept="image/*,video/*" style={{ display: "none" }} onChange={(e) => onFileChosen(e.target.files?.[0] || null)} />
+              <button onClick={(e) => { e.stopPropagation(); setAgentMenuOpen((v) => !v); }} title="Changer d'agent"
+                style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 38, padding: "0 11px", borderRadius: 10, border: "1px solid var(--bd)", background: "var(--surf-card)", color: "var(--tx)", fontSize: 13, fontWeight: 600, fontFamily: "IBM Plex Sans", cursor: "pointer", flexShrink: 0 }}>
+                <Bot size={15} style={{ color: "var(--accent)" }} />
+                {agents.find((a) => a.id === (agentId || OUR_AGENT_ID))?.name || OUR_AGENT_ID}
+                <ChevronDown size={14} style={{ color: "var(--tx-dim)" }} />
+              </button>
               <textarea ref={taRef} value={input} rows={1} placeholder="Ask about your campaigns, audiences, or spend…" onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                onKeyDown={(e) => {
+                  // Menu « @ » ouvert : les flèches et Entrée le pilotent avant
+                  // d'atteindre l'envoi du message.
+                  if (mentionOpen) {
+                    if (e.key === "ArrowDown") { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionMatches.length); return; }
+                    if (e.key === "ArrowUp") { e.preventDefault(); setMentionIdx((i) => (i <= 0 ? mentionMatches.length : i) - 1); return; }
+                    if (e.key === "Escape") { e.preventDefault(); setMentionIdx(-1); return; }
+                    if ((e.key === "Enter" || e.key === "Tab") && mentionIdx >= 0) { e.preventDefault(); pickAgent(mentionMatches[mentionIdx]); return; }
+                    // Tab sans sélection : complète le premier de la liste.
+                    if (e.key === "Tab") { e.preventDefault(); pickAgent(mentionMatches[0]); return; }
+                  }
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+                }}
                 style={{ flex: 1, resize: "none", background: "transparent", border: "none", outline: "none", color: "var(--tx)", fontSize: 14, fontFamily: "IBM Plex Sans", padding: "8px 10px", maxHeight: 120, lineHeight: 1.4 }} />
               <button onClick={() => send()} disabled={typing || (!input.trim() && !attachedImage)} style={{ width: 38, height: 38, borderRadius: 10, border: "none", background: input.trim() || attachedImage ? "var(--accent)" : "var(--sw)", color: "#fff", cursor: input.trim() || attachedImage ? "pointer" : "default", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "background .15s" }}><Send size={17} /></button>
             </div>

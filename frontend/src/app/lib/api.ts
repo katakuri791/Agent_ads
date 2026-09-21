@@ -1,4 +1,4 @@
-import { AuthUser, clearRefreshToken, clearToken, getRefreshToken, getToken, setCachedUser, setRefreshToken, setToken } from "./auth";
+import { AuthUser, clearClientToken, clearRefreshToken, clearToken, getClientToken, getRefreshToken, getToken, setCachedUser, setClientToken, setRefreshToken, setToken } from "./auth";
 
 // On retire tout `/` final : les chemins passés ci-dessous commencent déjà par
 // `/` (ex. `/auth/signup`). Sans ça, une VITE_API_URL finissant par `/` produit
@@ -149,6 +149,7 @@ interface AuthResponse {
   refresh_token?: string;
   token_type: string;
   user: AuthUser;
+  client_token?: string | null;
 }
 
 export interface MetaSettings {
@@ -581,6 +582,9 @@ export interface ChatResponseT {
   reply: string;
   tool_calls: Array<{ name: string; status: string; output?: string }>;
   structured?: StructuredOutput | null;
+  // Agents UCC : room WebSocket où le bot émettra sa réponse (`bot-message`).
+  // `reply` est vide dans ce cas — UCC est un webhook, il ne répond pas au POST.
+  ucc_conversation_id?: string | null;
 }
 
 export type DateRange = { preset?: string; since?: string; until?: string };
@@ -641,6 +645,10 @@ export const api = {
     // rejouerait l'ancien refresh token et basculerait sur l'utilisateur d'avant.
     if (data.refresh_token) setRefreshToken(data.refresh_token);
     else clearRefreshToken();
+    // Token tybotflow (login délégué) : réutilisé pour appeler directement des
+    // services tybotflow (ex. UCC) avec le même token que le login.
+    if (data.client_token) setClientToken(data.client_token);
+    else clearClientToken();
     setCachedUser(data.user);
     return data.user;
   },
@@ -924,14 +932,38 @@ export const api = {
   getCampaignQuestionnaire: () =>
     request<CampaignQuestionnaireStructured>("/chat/campaign-questionnaire"),
 
-  chat: (message: string, conversationId?: string, attachedImageHash?: string | null, accountId?: string | null) =>
-    request<ChatResponseT>("/chat", {
+  // Passe par /chat/botpress : c'est lui qui porte l'agent ciblé dans `bot_id`.
+  // Sa réponse contient AUSSI reply/structured/tool_calls (en plus du tableau
+  // `responses` destiné à Botpress), donc rien n'est perdu côté UI.
+  chat: (message: string, conversationId?: string, attachedImageHash?: string | null, accountId?: string | null, botId?: string | null) =>
+    request<ChatResponseT>("/chat/botpress", {
       method: "POST",
+      // Token tybotflow : requis seulement pour parler à un agent externe (UCC).
+      headers: getClientToken() ? { "X-Client-Token": getClientToken()! } : {},
       body: JSON.stringify({
-        message,
-        conversation_id: conversationId,
-        attached_image_hash: attachedImageHash || undefined,
+        type: "text",
+        text: message,
+        // `bot_id` = agent conversationnel (« Meta_ads », « fizzy »), choisi via
+        // `@nom`. Obligatoire côté schéma → on retombe sur notre agent par défaut.
+        bot_id: botId || "Meta_ads",
         account_id: accountId || undefined,
+        attached_image_hash: attachedImageHash || undefined,
+        payload: {
+          // Pas de `user_id` : notre identité vient du JWT. L'envoyer ferait
+          // diverger la clé de tenant du chat de celle de /conversations, et les
+          // fils créés deviendraient invisibles dans la liste.
+          conversation_id: conversationId,
+          channel: "web",
+        },
       }),
     }),
+
+  // Agents du workspace tybotflow. Le token du login délégué est requis : c'est
+  // lui qui autorise l'appel au workspace côté plateforme cliente.
+  agents: () => {
+    const clientToken = getClientToken();
+    return request<{ id: string; name: string }[]>("/agents", {
+      headers: clientToken ? { "X-Client-Token": clientToken } : {},
+    });
+  },
 };

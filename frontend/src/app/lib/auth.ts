@@ -11,6 +11,10 @@ export interface AuthUser {
 const TOKEN_KEY = "metainsight.token";
 const REFRESH_KEY = "metainsight.refresh_token";
 const USER_KEY = "metainsight.user";
+// Token brut tybotflow (login délégué), utilisé pour appeler directement des
+// services tybotflow (ex. UCC) avec le même token que le login. Absent en
+// login local.
+const CLIENT_TOKEN_KEY = "metainsight.client_token";
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -36,6 +40,19 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(REFRESH_KEY);
   localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(CLIENT_TOKEN_KEY);
+}
+
+export function getClientToken(): string | null {
+  return localStorage.getItem(CLIENT_TOKEN_KEY);
+}
+
+export function setClientToken(token: string) {
+  localStorage.setItem(CLIENT_TOKEN_KEY, token);
+}
+
+export function clearClientToken() {
+  localStorage.removeItem(CLIENT_TOKEN_KEY);
 }
 
 export function getCachedUser(): AuthUser | null {

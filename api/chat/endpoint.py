@@ -7,9 +7,10 @@ from typing import Optional
 from facebook_business.exceptions import FacebookRequestError
 from fastapi import HTTPException, UploadFile
 
-from backend import notifications
+from backend import notifications, ucc
 from backend.auth import delegated_id
 from backend.agent import (
+    AGENT_ID,
     build_agent,
     build_campaign_questionnaire,
     extract_final_reply,
@@ -30,6 +31,7 @@ from backend.db import (
     touch_conversation,
 )
 from backend.meta_tools import upload_image_bytes, upload_video_bytes
+from backend.config import UCC_SEND_URL, is_agent_id
 from backend.ratelimit import check_rate_limit
 from backend.schemas import (
     BotpressChatRequest,
@@ -95,7 +97,50 @@ def campaign_questionnaire() -> CampaignQuestionnaire:
     return build_campaign_questionnaire()
 
 
-def chat(body: ChatRequest, user: UserPublic) -> ChatResponse:
+def _chat_ucc(
+    body: ChatRequest, tenant_id: str, external_id: str, client_token: Optional[str]
+) -> ChatResponse:
+    """Envoie le message à un agent UCC (« fizzy »).
+
+    UCC est un webhook : aucune réponse du bot ici. `reply` est donc VIDE — le
+    frontend affiche la réponse quand elle arrive sur le WebSocket (`bot-message`),
+    dans la room = `ucc_conversation_id` renvoyé ci-dessous.
+
+    ⚠️ Le fil UCC vit côté plateforme cliente, PAS dans notre base : son id n'est
+    pas une de nos PK. On le renvoie donc à part (`ucc_conversation_id`) au lieu
+    de le faire passer pour un `conversation_id` local.
+    """
+    if not UCC_SEND_URL:
+        # Règle projet : message lisible, jamais d'erreur technique à l'écran.
+        raise HTTPException(
+            status_code=503, detail="Cet agent n'est pas encore disponible."
+        )
+    if not (client_token or "").strip():
+        raise HTTPException(
+            status_code=403, detail="Reconnecte-toi pour parler à cet agent."
+        )
+
+    room = ucc.start_conversation(client_token, body.bot_id, external_id)
+    ucc.send_message(client_token, body.bot_id, body.message or "", external_id)
+    # On persiste le message de l'utilisateur dans NOTRE fil pour garder
+    # l'historique du dashboard ; les réponses du bot y sont ajoutées par le
+    # frontend à leur arrivée sur le WebSocket.
+    conv_id = body.conversation_id or create_conversation(
+        tenant_id, title=(body.message or "")[:60] or "Nouvelle conversation"
+    )
+    save_message(conv_id, tenant_id, "user", body.message or "", {"bot_id": body.bot_id})
+    return ChatResponse(
+        conversation_id=conv_id,
+        reply="",
+        tool_calls=[],
+        structured=None,
+        ucc_conversation_id=room,
+    )
+
+
+def chat(
+    body: ChatRequest, user: UserPublic, client_token: Optional[str] = None
+) -> ChatResponse:
     # Identité de l'appelant pour /chat public : si l'extérieur (Botpress) fournit
     # un `user_id`, c'est LUI qui identifie la personne ; sinon on retombe sur
     # l'utilisateur (démo fixe en public, ou l'utilisateur du JWT côté frontend).
@@ -115,6 +160,13 @@ def chat(body: ChatRequest, user: UserPublic) -> ChatResponse:
             status_code=429,
             detail="Trop de messages en peu de temps. Réessaie dans une minute.",
         )
+
+    # Agent externe (UCC) : « @fizzy » ne parle pas à notre agent Meta Ads mais à
+    # un bot de la plateforme cliente. On sort AVANT de construire le LangGraph.
+    # UCC étant un webhook, il n'y a pas de réponse à renvoyer ici : le bot répond
+    # via l'événement WebSocket `bot-message`, que le frontend écoute.
+    if body.bot_id and body.bot_id != AGENT_ID and is_agent_id(body.bot_id):
+        return _chat_ucc(body, tenant_id, raw_uid or str(user.id), client_token)
 
     # L'agent agit sur le compte sélectionné dans l'UI (multi-clés).
     settings = get_meta_account(user.id, body.account_id)
@@ -362,15 +414,19 @@ def _chat_response_to_botpress(resp: ChatResponse) -> list[dict]:
     return out
 
 
-def chat_botpress(body: BotpressChatRequest, user: UserPublic) -> BotpressChatResponse:
+def chat_botpress(
+    body: BotpressChatRequest, user: UserPublic, client_token: Optional[str] = None
+) -> BotpressChatResponse:
     """Point d'entrée Botpress : accepte le format `input.txt` (type/text/bot_id/
     payload) et renvoie le tableau `responses` Botpress. Sous le capot, on mappe
     vers ChatRequest et on réutilise toute la logique de l'agent (`chat`).
 
-    ⚠️ Le fil est résolu à partir du `user_id` (l'identité fournie par l'appelant),
-    PAS d'un `conversation_id` que Botpress devrait tracer : on retrouve la dernière
-    conversation de cette personne pour la continuer, ou on en crée une au 1er
-    message. `payload.conversation_id` est donc IGNORÉ."""
+    Le fil est résolu à partir du `user_id` quand l'appelant ne suit pas les
+    conversations (cas de Botpress) : on retrouve la dernière conversation de
+    cette personne pour la continuer, ou on en crée une au 1er message. Un
+    `payload.conversation_id` explicite est HONORÉ (le frontend, lui, a un
+    sélecteur de fils : l'ignorer renverrait l'utilisateur dans le dernier fil
+    ouvert à chaque message)."""
     payload = body.payload
     raw_uid = (payload.user_id or "").strip()
 
@@ -378,20 +434,32 @@ def chat_botpress(body: BotpressChatRequest, user: UserPublic) -> BotpressChatRe
     # son fil le plus récent sous sa clé de tenant = son `user_id` BRUT (la même que
     # le login délégué et que /chat). Trouvé → on le continue ; sinon `chat()` en
     # créera un nouveau (conversation_id laissé à None).
-    conv_id: Optional[str] = None
-    if raw_uid:
+    conv_id: Optional[str] = (payload.conversation_id or "").strip() or None
+    if not conv_id and raw_uid:
         existing = get_latest_conversation(delegated_id(raw_uid))
         if existing:
             conv_id = existing["id"]
 
+    # `bot_id` porte DEUX sens selon l'appelant : identité d'agent conversationnel
+    # (« Meta_ads », « fizzy ») ou, historiquement, l'`account_id` (compte Meta).
+    # On le passe TEL QUEL : le validateur de ChatRequest ne le replie en
+    # `account_id` que s'il ne nomme pas un agent (cf. _accept_botpress_aliases).
     req = ChatRequest(
         message=body.text,
         conversation_id=conv_id,
-        account_id=body.bot_id or None,  # bot_id = account_id (compte Meta)
+        account_id=body.account_id or None,
+        bot_id=body.bot_id or None,
+        attached_image_hash=body.attached_image_hash or None,
         user_id=payload.user_id or None,
     )
-    resp = chat(req, user)
+    resp = chat(req, user, client_token)
     return BotpressChatResponse(
         conversation_id=resp.conversation_id,
         responses=_chat_response_to_botpress(resp),
+        # Passés tels quels : Botpress lit `responses` et ignore le reste, le
+        # frontend lit ceux-ci et garde ses cartes interactives + ses caches à jour.
+        reply=resp.reply,
+        tool_calls=resp.tool_calls,
+        structured=resp.structured,
+        ucc_conversation_id=resp.ucc_conversation_id,
     )
