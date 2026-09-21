@@ -941,6 +941,23 @@ export const api = {
     if (search) params.append("search", search);
     return request<CreativeIdeasResponse>(`/creative-ideas?${params.toString()}`);
   },
+
+  createCreativeIdea: (body: Partial<CreativeIdea>) =>
+    request<CreativeIdea>("/creative-ideas", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateCreativeIdea: (id: number, body: Partial<CreativeIdea>) =>
+    request<any>(`/creative-ideas/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deleteCreativeIdea: (id: number) =>
+    request<{ success: boolean; id: number }>(`/creative-ideas/${id}`, {
+      method: "DELETE",
+    }),
 };
 
 export interface CreativeIdea {
