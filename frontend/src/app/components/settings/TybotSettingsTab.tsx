@@ -2,7 +2,8 @@ import { useState } from "react";
 import {
   Plus, Edit3, Trash2, Globe, Share2, Target, Lightbulb,
   Check, Loader2, Sparkles, Image as ImageIcon,
-  ExternalLink, Upload, AlertCircle, Eye, RefreshCw
+  ExternalLink, Upload, AlertCircle, Eye, RefreshCw,
+  Calendar, Layers, MessageSquare, Video, FileText, ChevronRight
 } from "lucide-react";
 import { MSButton } from "../ms/primitives";
 import { useToast } from "../../providers/ToastProvider";
@@ -16,32 +17,97 @@ import {
   type TybotAttachmentItem
 } from "../../hooks/useTybotSettings";
 
-const ALL_CHANNELS = ["Facebook", "Instagram", "Linkedin", "X", "TikTok", "All"];
-const ALL_CREATIVE_TYPES = ["Montage video", "Photo", "Design", "Carrousel"];
-const ALL_LANGUAGES = ["Français", "Anglais", "Arabe", "Espagnol"];
-const COMMON_THEMES = [
-  "Conseils & Astuces",
-  "Coulisses / Vie d’équipe",
-  "Témoignages / Avis Clients",
-  "Célébrations / Dates clés",
-  "Focus produit / service",
-  "Éducation / Pédagogie",
-  "Actualité de la marque",
-  "Engagement / Question au public",
-  "Actualité de secteur",
-  "Données / Chiffres marquants"
+// Options exactes requises par les métadonnées de la table Tybot Smart-DB
+export const VALID_CHANNELS = ["Facebook", "Instagram", "TikTok", "Linkedin", "Youtube", "X", "All"];
+
+export const VALID_CONTENT_THEMES = [
+  { value: "Conseils & Astuces", label: "Conseils & Astuces" },
+  { value: "Coulisses / Vie d’équipe", label: "Coulisses / Vie d’équipe" },
+  { value: "Témoignages / Avis Clients", label: "Témoignages / Avis Clients" },
+  { value: "Célébrations / Dates clés", label: "Célébrations / Dates clés" },
+  { value: "Focus produit / service", label: "Focus produit / service" },
+  // Important : l'espace au début est requis par la configuration du MultiSelect Tybot
+  { value: " Données / Chiffres marquants", label: "Données / Chiffres marquants" },
+  { value: "Engagement / Question au public", label: "Engagement / Question au public" },
+  { value: "Éducation / Pédagogie", label: "Éducation / Pédagogie" },
+  { value: "UGC / Contenu généré par les clients", label: "UGC / Contenu généré par les clients" },
+  { value: "Actualité de la marque", label: "Actualité de la marque" },
+  // Important : l'espace à la fin est requis par la configuration du MultiSelect Tybot
+  { value: "Actualité de secteur ", label: "Actualité de secteur" },
+  { value: "Promotion", label: "Promotion" },
+  { value: "Recrutement", label: "Recrutement" },
 ];
-const COMMON_OBJECTIVES = [
+
+export const VALID_OBJECTIVES = [
   "Attraction / Notoriété",
   "Engagement",
+  "Conversion",
   "Fidélisation",
   "Éducation",
-  "Humanisation",
-  "Interaction communautaire",
   "Crédibilité / Autorité",
+  "Humanisation",
+  "Recrutement",
   "Promotion",
-  "Conversion"
+  "Interaction communautaire"
 ];
+
+export const VALID_LANGUAGES = ["Français", "Anglais", "Arabe", "Darija marocaine"];
+export const VALID_CREATIVE_TYPES = ["Photo", "Design", "Montage video", "Carrousel", "Avatar video"];
+
+function normalizeContentThemesForTybot(themes: string[]): string[] {
+  return themes.map((th) => {
+    const trimmed = th.trim();
+    const found = VALID_CONTENT_THEMES.find(
+      (v) => v.label.trim().toLowerCase() === trimmed.toLowerCase() || v.value.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    return found ? found.value : th;
+  });
+}
+
+function parseArrayField(val: unknown): string[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val.map(String).map((s) => s.trim()).filter(Boolean);
+  if (typeof val === "string") return val.split(",").map((s) => s.trim()).filter(Boolean);
+  return [];
+}
+
+function parseContentThemes(val?: unknown): string[] {
+  if (!val) return [];
+  const list = Array.isArray(val)
+    ? val.map(String)
+    : typeof val === "string"
+    ? val.split(",")
+    : [];
+
+  return list
+    .map((s) => {
+      const trimmed = s.trim();
+      const found = VALID_CONTENT_THEMES.find(
+        (v) => v.value.trim().toLowerCase() === trimmed.toLowerCase() || v.label.trim().toLowerCase() === trimmed.toLowerCase()
+      );
+      return found ? found.value : trimmed;
+    })
+    .filter(Boolean);
+}
+
+function getThemeDisplayLabel(themeValue: string): string {
+  const found = VALID_CONTENT_THEMES.find((v) => v.value === themeValue || v.label === themeValue.trim());
+  return found ? found.label : themeValue.trim();
+}
+
+function parseAttachments(val: unknown): TybotAttachmentItem[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  if (typeof val === "string") {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
 
 export function TybotSettingsTab() {
   const toast = useToast();
@@ -60,6 +126,7 @@ export function TybotSettingsTab() {
 
   // Form State
   const [formAbout, setFormAbout] = useState("");
+  const [formStrategyDetails, setFormStrategyDetails] = useState("");
   const [formChannels, setFormChannels] = useState<string[]>([]);
   const [formThemes, setFormThemes] = useState<string[]>([]);
   const [formObjectives, setFormObjectives] = useState<string[]>([]);
@@ -70,12 +137,12 @@ export function TybotSettingsTab() {
   const [formStatus, setFormStatus] = useState<string>("Active");
   const [formSmLinks, setFormSmLinks] = useState("");
   const [formLogos, setFormLogos] = useState<TybotAttachmentItem[]>([]);
-  const [customTheme, setCustomTheme] = useState("");
-  const [customObjective, setCustomObjective] = useState("");
+  const [formDesignInspirations, setFormDesignInspirations] = useState<TybotAttachmentItem[]>([]);
 
   const openCreate = () => {
     setSelectedRecord(null);
     setFormAbout("");
+    setFormStrategyDetails("");
     setFormChannels(["Facebook", "Instagram", "Linkedin", "X"]);
     setFormThemes(["Conseils & Astuces", "Actualité de la marque", "Éducation / Pédagogie"]);
     setFormObjectives(["Attraction / Notoriété", "Engagement", "Conversion"]);
@@ -86,22 +153,25 @@ export function TybotSettingsTab() {
     setFormStatus("Active");
     setFormSmLinks("* Instagram : \n* Facebook : \n* Linkedin : \n* X : ");
     setFormLogos([]);
+    setFormDesignInspirations([]);
     setModalMode("create");
   };
 
   const openEdit = (record: TybotSettingRecord) => {
     setSelectedRecord(record);
     setFormAbout(record["About Brand"] || "");
-    setFormChannels(record.Channels ? record.Channels.split(",").map((s) => s.trim()).filter(Boolean) : []);
-    setFormThemes(record["Content Themes"] ? record["Content Themes"].split(",").map((s) => s.trim()).filter(Boolean) : []);
-    setFormObjectives(record["Strategic objectives"] ? record["Strategic objectives"].split(",").map((s) => s.trim()).filter(Boolean) : []);
-    setFormCreatives(record["Creative type"] ? record["Creative type"].split(",").map((s) => s.trim()).filter(Boolean) : []);
-    setFormLanguages(record.Language ? record.Language.split(",").map((s) => s.trim()).filter(Boolean) : []);
+    setFormStrategyDetails(record["Social Media Strategy (Details)"] || "");
+    setFormChannels(parseArrayField(record.Channels));
+    setFormThemes(parseContentThemes(record["Content Themes"]));
+    setFormObjectives(parseArrayField(record["Strategic objectives"]));
+    setFormCreatives(parseArrayField(record["Creative type"]));
+    setFormLanguages(parseArrayField(record.Language));
     setFormPubFreq(record["Publishing frequency"] || 10);
     setFormStoriesFreq(record["Stories Frequency"] || 5);
     setFormStatus(record.Status || "Active");
     setFormSmLinks(record["SM Links"] || "");
-    setFormLogos(Array.isArray(record.Logo) ? record.Logo : []);
+    setFormLogos(parseAttachments(record.Logo));
+    setFormDesignInspirations(parseAttachments(record["Design Inspiration"]));
     setModalMode("edit");
   };
 
@@ -113,16 +183,24 @@ export function TybotSettingsTab() {
       if (res.url) {
         setFormLogos((prev) => [...prev, { url: res.url, title: file.name, id: `logo_${Date.now()}` }]);
         toast("Logo téléversé avec succès !", { kind: "success" });
-      } else {
-        toast("Échec du téléversement du logo", { kind: "error" });
       }
     } catch (err: any) {
       toast("Erreur lors de l'upload du logo", { kind: "error", msg: err?.message });
     }
   };
 
-  const removeLogo = (index: number) => {
-    setFormLogos((prev) => prev.filter((_, i) => i !== index));
+  const handleInspirationUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const res = await uploadM.mutateAsync(file);
+      if (res.url) {
+        setFormDesignInspirations((prev) => [...prev, { url: res.url, title: file.name, id: `insp_${Date.now()}` }]);
+        toast("Image d'inspiration téléversée !", { kind: "success" });
+      }
+    } catch (err: any) {
+      toast("Erreur lors de l'upload de l'inspiration", { kind: "error", msg: err?.message });
+    }
   };
 
   const toggleArrayItem = (list: string[], setList: (l: string[]) => void, item: string) => {
@@ -135,22 +213,25 @@ export function TybotSettingsTab() {
 
   const handleSave = async () => {
     if (!formAbout.trim()) {
-      toast("Veuillez renseigner les informations sur la marque (About Brand)", { kind: "error" });
+      toast("Veuillez renseigner la description de la marque (About Brand)", { kind: "error" });
       return;
     }
 
     const payload: Partial<TybotSettingRecord> = {
       "About Brand": formAbout.trim(),
-      Channels: formChannels.join(","),
-      "Content Themes": formThemes.join(","),
-      "Strategic objectives": formObjectives.join(","),
-      "Creative type": formCreatives.join(","),
-      Language: formLanguages.join(","),
+      Channels: formChannels,
+      // Envoi direct sous forme de tableau pour préserver les espaces attendus par Tybot
+      "Content Themes": normalizeContentThemesForTybot(formThemes),
+      "Strategic objectives": formObjectives,
+      "Creative type": formCreatives,
+      Language: formLanguages,
       "Publishing frequency": Number(formPubFreq) || 0,
       "Stories Frequency": Number(formStoriesFreq) || 0,
       Status: formStatus,
       "SM Links": formSmLinks.trim(),
       Logo: formLogos,
+      "Social Media Strategy (Details)": formStrategyDetails.trim() || null,
+      "Design Inspiration": formDesignInspirations.length > 0 ? formDesignInspirations : undefined,
     };
 
     try {
@@ -206,7 +287,7 @@ export function TybotSettingsTab() {
             </span>
           </div>
           <p style={{ fontSize: 13, color: "var(--tx-dim)", margin: "6px 0 0" }}>
-            Gérez l'identité de marque, les canaux cibles, thèmes de contenu, objectifs stratégiques et fréquences de publication.
+            Configuration globale de la marque, fréquences de publication, canaux, objectifs et thématiques de contenu.
           </p>
         </div>
 
@@ -286,7 +367,7 @@ export function TybotSettingsTab() {
           <AlertCircle size={22} color="#EF4444" />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600, color: "#EF4444", fontSize: 14 }}>Erreur de chargement</div>
-            <div style={{ fontSize: 12.5, color: "var(--tx-dim)", marginTop: 2 }}>Impossible de joindre la table des paramètres Tybot. Vérifiez votre connexion.</div>
+            <div style={{ fontSize: 12.5, color: "var(--tx-dim)", marginTop: 2 }}>Impossible de joindre la table des paramètres Tybot.</div>
           </div>
           <MSButton variant="outline" size="sm" onClick={() => refetch()}>Réessayer</MSButton>
         </div>
@@ -309,10 +390,10 @@ export function TybotSettingsTab() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {filteredList.map((rec) => {
-                const logos = Array.isArray(rec.Logo) ? rec.Logo : [];
-                const channels = rec.Channels ? rec.Channels.split(",").map((s) => s.trim()).filter(Boolean) : [];
-                const objectives = rec["Strategic objectives"] ? rec["Strategic objectives"].split(",").map((s) => s.trim()).filter(Boolean) : [];
-                const themes = rec["Content Themes"] ? rec["Content Themes"].split(",").map((s) => s.trim()).filter(Boolean) : [];
+                const logos = parseAttachments(rec.Logo);
+                const channels = parseArrayField(rec.Channels);
+                const objectives = parseArrayField(rec["Strategic objectives"]);
+                const themes = parseContentThemes(rec["Content Themes"]);
 
                 return (
                   <div
@@ -325,7 +406,6 @@ export function TybotSettingsTab() {
                       display: "flex",
                       flexDirection: "column",
                       gap: 16,
-                      transition: "all 0.15s ease",
                       boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
                     }}
                   >
@@ -453,19 +533,19 @@ export function TybotSettingsTab() {
                         </div>
                       </div>
 
-                      {/* Objectifs clés */}
+                      {/* Thématiques */}
                       <div>
                         <div style={{ fontSize: 11, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 6 }}>
-                          Objectifs stratégiques
+                          Thématiques ({themes.length})
                         </div>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                          {objectives.slice(0, 3).map((obj) => (
-                            <span key={obj} style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: "color-mix(in srgb, var(--accent) 10%, transparent)", color: "var(--accent)" }}>
-                              {obj}
+                          {themes.slice(0, 3).map((th) => (
+                            <span key={th} style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: "color-mix(in srgb, var(--accent) 10%, transparent)", color: "var(--accent)" }}>
+                              {getThemeDisplayLabel(th)}
                             </span>
                           ))}
-                          {objectives.length > 3 && (
-                            <span style={{ fontSize: 11, color: "var(--tx-dim)" }}>+{objectives.length - 3}</span>
+                          {themes.length > 3 && (
+                            <span style={{ fontSize: 11, color: "var(--tx-dim)" }}>+{themes.length - 3}</span>
                           )}
                         </div>
                       </div>
@@ -518,7 +598,7 @@ export function TybotSettingsTab() {
                   {modalMode === "create" ? "Nouvelle configuration de marque" : `Modifier la configuration #${selectedRecord?.Id}`}
                 </h3>
                 <p style={{ fontSize: 12.5, color: "var(--tx-dim)", margin: "4px 0 0" }}>
-                  Remplissez les détails pour la synchronisation automatique Tybot Smart-DB.
+                  Options validées pour la synchronisation Tybot Smart-DB.
                 </p>
               </div>
               <button
@@ -594,7 +674,7 @@ export function TybotSettingsTab() {
                     <div key={idx} style={{ position: "relative", width: 64, height: 64, borderRadius: 8, overflow: "hidden", border: "1px solid var(--bd)", background: "#fff" }}>
                       <img src={logo.url} alt={logo.title || "Logo"} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
                       <button
-                        onClick={() => removeLogo(idx)}
+                        onClick={() => setFormLogos((prev) => prev.filter((_, i) => i !== idx))}
                         style={{
                           position: "absolute",
                           top: 2,
@@ -644,13 +724,37 @@ export function TybotSettingsTab() {
                 />
               </div>
 
+              {/* Stratégie Social Media (Détails) */}
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-2)", display: "block", marginBottom: 6 }}>
+                  Détails de la Stratégie Social Media (Optionnel)
+                </label>
+                <textarea
+                  rows={2}
+                  value={formStrategyDetails}
+                  onChange={(e) => setFormStrategyDetails(e.target.value)}
+                  placeholder="Orientations éditoriales spécifiques, règles d'engagement, tonalité..."
+                  style={{
+                    width: "100%",
+                    background: "var(--surf-card)",
+                    border: "1px solid var(--bd)",
+                    borderRadius: 8,
+                    padding: 10,
+                    fontSize: 13,
+                    color: "var(--tx)",
+                    outline: "none",
+                    resize: "vertical",
+                  }}
+                />
+              </div>
+
               {/* Canaux de diffusion */}
               <div>
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-2)", display: "block", marginBottom: 8 }}>
                   Canaux de diffusion (Channels)
                 </label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {ALL_CHANNELS.map((ch) => {
+                  {VALID_CHANNELS.map((ch) => {
                     const active = formChannels.includes(ch);
                     return (
                       <button
@@ -730,7 +834,7 @@ export function TybotSettingsTab() {
                     Langues
                   </label>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {ALL_LANGUAGES.map((lang) => {
+                    {VALID_LANGUAGES.map((lang) => {
                       const active = formLanguages.includes(lang);
                       return (
                         <button
@@ -759,7 +863,7 @@ export function TybotSettingsTab() {
                     Types de créatifs
                   </label>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {ALL_CREATIVE_TYPES.map((ct) => {
+                    {VALID_CREATIVE_TYPES.map((ct) => {
                       const active = formCreatives.includes(ct);
                       return (
                         <button
@@ -787,10 +891,10 @@ export function TybotSettingsTab() {
               {/* Objectifs stratégiques */}
               <div>
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-2)", display: "block", marginBottom: 8 }}>
-                  Objectifs stratégiques
+                  Objectifs stratégiques (MultiSelect)
                 </label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-                  {COMMON_OBJECTIVES.map((obj) => {
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {VALID_OBJECTIVES.map((obj) => {
                     const active = formObjectives.includes(obj);
                     return (
                       <button
@@ -799,7 +903,7 @@ export function TybotSettingsTab() {
                         onClick={() => toggleArrayItem(formObjectives, setFormObjectives, obj)}
                         style={{
                           fontSize: 11.5,
-                          padding: "4px 9px",
+                          padding: "5px 10px",
                           borderRadius: 6,
                           border: `1px solid ${active ? "var(--accent)" : "var(--bd)"}`,
                           background: active ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "var(--surf-card)",
@@ -807,60 +911,39 @@ export function TybotSettingsTab() {
                           cursor: "pointer",
                         }}
                       >
-                        {obj}
+                        {active ? "✓ " : ""}{obj}
                       </button>
                     );
                   })}
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    type="text"
-                    placeholder="Ajouter un autre objectif..."
-                    value={customObjective}
-                    onChange={(e) => setCustomObjective(e.target.value)}
-                    style={{
-                      flex: 1,
-                      height: 34,
-                      background: "var(--surf-card)",
-                      border: "1px solid var(--bd)",
-                      borderRadius: 6,
-                      padding: "0 10px",
-                      fontSize: 12,
-                      color: "var(--tx)",
-                      outline: "none",
-                    }}
-                  />
-                  <MSButton
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (customObjective.trim()) {
-                        setFormObjectives([...formObjectives, customObjective.trim()]);
-                        setCustomObjective("");
-                      }
-                    }}
-                  >
-                    Ajouter
-                  </MSButton>
                 </div>
               </div>
 
               {/* Thèmes de contenu */}
               <div>
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-2)", display: "block", marginBottom: 8 }}>
-                  Thématiques de contenu (Content Themes)
+                  Thématiques de contenu (Options officielles Tybot)
                 </label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-                  {COMMON_THEMES.map((theme) => {
-                    const active = formThemes.includes(theme);
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {VALID_CONTENT_THEMES.map((item) => {
+                    const active = formThemes.some(
+                      (t) => t.trim().toLowerCase() === item.value.trim().toLowerCase() || t.trim().toLowerCase() === item.label.trim().toLowerCase()
+                    );
                     return (
                       <button
-                        key={theme}
+                        key={item.value}
                         type="button"
-                        onClick={() => toggleArrayItem(formThemes, setFormThemes, theme)}
+                        onClick={() => {
+                          if (active) {
+                            setFormThemes(formThemes.filter(
+                              (t) => t.trim().toLowerCase() !== item.value.trim().toLowerCase() && t.trim().toLowerCase() !== item.label.trim().toLowerCase()
+                            ));
+                          } else {
+                            setFormThemes([...formThemes, item.value]);
+                          }
+                        }}
                         style={{
                           fontSize: 11.5,
-                          padding: "4px 9px",
+                          padding: "5px 10px",
                           borderRadius: 6,
                           border: `1px solid ${active ? "var(--accent)" : "var(--bd)"}`,
                           background: active ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "var(--surf-card)",
@@ -868,42 +951,64 @@ export function TybotSettingsTab() {
                           cursor: "pointer",
                         }}
                       >
-                        {theme}
+                        {active ? "✓ " : ""}{item.label}
                       </button>
                     );
                   })}
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    type="text"
-                    placeholder="Ajouter une autre thématique..."
-                    value={customTheme}
-                    onChange={(e) => setCustomTheme(e.target.value)}
+              </div>
+
+              {/* Inspirations Design Upload */}
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-2)" }}>
+                    Inspirations de design & visuels ({formDesignInspirations.length})
+                  </label>
+                  <label
                     style={{
-                      flex: 1,
-                      height: 34,
-                      background: "var(--surf-card)",
-                      border: "1px solid var(--bd)",
-                      borderRadius: 6,
-                      padding: "0 10px",
-                      fontSize: 12,
-                      color: "var(--tx)",
-                      outline: "none",
-                    }}
-                  />
-                  <MSButton
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (customTheme.trim()) {
-                        setFormThemes([...formThemes, customTheme.trim()]);
-                        setCustomTheme("");
-                      }
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      color: "var(--accent)",
+                      cursor: "pointer",
                     }}
                   >
-                    Ajouter
-                  </MSButton>
+                    <Upload size={13} /> Ajouter une inspiration
+                    <input type="file" accept="image/*" onChange={handleInspirationUpload} style={{ display: "none" }} />
+                  </label>
                 </div>
+                {formDesignInspirations.length > 0 && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: 10, background: "var(--surf-inset)", borderRadius: 8 }}>
+                    {formDesignInspirations.map((insp, idx) => (
+                      <div key={idx} style={{ position: "relative", width: 60, height: 60, borderRadius: 6, overflow: "hidden", border: "1px solid var(--bd)" }}>
+                        <img src={insp.url} alt="Inspiration" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        <button
+                          onClick={() => setFormDesignInspirations((prev) => prev.filter((_, i) => i !== idx))}
+                          style={{
+                            position: "absolute",
+                            top: 2,
+                            right: 2,
+                            width: 16,
+                            height: 16,
+                            borderRadius: 999,
+                            background: "rgba(239,68,68,0.85)",
+                            color: "#fff",
+                            border: "none",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            cursor: "pointer",
+                            fontSize: 9,
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Liens réseaux sociaux (SM Links) */}
@@ -1020,97 +1125,390 @@ export function TybotSettingsTab() {
         </div>
       )}
 
-      {/* Modal Détails / Preview */}
-      {previewRecord && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 220,
-            background: "rgba(0,0,0,0.65)",
-            backdropFilter: "blur(3px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 20,
-          }}
-          onClick={() => setPreviewRecord(null)}
-        >
+      {/* Modal Détails Complet (Preview) */}
+      {previewRecord && (() => {
+        const logos = parseAttachments(previewRecord.Logo);
+        const inspirations = parseAttachments(previewRecord["Design Inspiration"]);
+        const channels = parseArrayField(previewRecord.Channels);
+        const themes = parseContentThemes(previewRecord["Content Themes"]);
+        const objectives = parseArrayField(previewRecord["Strategic objectives"]);
+        const creatives = parseArrayField(previewRecord["Creative type"]);
+        const languages = parseArrayField(previewRecord.Language);
+
+        return (
           <div
             style={{
-              width: "100%",
-              maxWidth: 680,
-              maxHeight: "85vh",
-              overflowY: "auto",
-              background: "var(--surf-pop)",
-              border: "1px solid var(--bd)",
-              borderRadius: 16,
-              padding: 24,
-              boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
+              position: "fixed",
+              inset: 0,
+              zIndex: 220,
+              background: "rgba(0,0,0,0.7)",
+              backdropFilter: "blur(4px)",
               display: "flex",
-              flexDirection: "column",
-              gap: 16,
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 24,
             }}
-            onClick={(e) => e.stopPropagation()}
+            onClick={() => setPreviewRecord(null)}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--bd)", paddingBottom: 12 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--tx)" }}>
-                Détails de la configuration #{previewRecord.Id}
-              </div>
-              <button
-                onClick={() => setPreviewRecord(null)}
-                style={{ background: "transparent", border: "none", color: "var(--tx-dim)", cursor: "pointer", fontSize: 18 }}
-              >
-                ✕
-              </button>
-            </div>
+            <div
+              style={{
+                width: "100%",
+                maxWidth: 820,
+                maxHeight: "88vh",
+                overflowY: "auto",
+                background: "var(--surf-pop)",
+                border: "1px solid var(--bd)",
+                borderRadius: 18,
+                padding: 28,
+                boxShadow: "0 25px 80px rgba(0,0,0,0.6)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 22,
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", borderBottom: "1px solid var(--bd)", paddingBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                  {logos.length > 0 && logos[0]?.url ? (
+                    <img
+                      src={logos[0].url}
+                      alt="Logo"
+                      style={{
+                        width: 58,
+                        height: 58,
+                        borderRadius: 12,
+                        objectFit: "contain",
+                        background: "#fff",
+                        padding: 4,
+                        border: "1px solid var(--bd)",
+                        boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width: 58,
+                        height: 58,
+                        borderRadius: 12,
+                        background: "color-mix(in srgb, var(--accent) 15%, transparent)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "var(--accent)",
+                      }}
+                    >
+                      <Sparkles size={28} />
+                    </div>
+                  )}
 
-            {/* Logos */}
-            {Array.isArray(previewRecord.Logo) && previewRecord.Logo.length > 0 && (
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <h3 style={{ fontSize: 18, fontWeight: 700, color: "var(--tx)", margin: 0, fontFamily: "DM Sans, sans-serif" }}>
+                        Configuration de Marque #{previewRecord.Id}
+                      </h3>
+                      <span
+                        style={{
+                          fontSize: 11.5,
+                          fontWeight: 700,
+                          padding: "2px 9px",
+                          borderRadius: 999,
+                          background: previewRecord.Status === "Active" ? "#22C55E18" : "#EF444418",
+                          color: previewRecord.Status === "Active" ? "#22C55E" : "#EF4444",
+                          border: `1px solid ${previewRecord.Status === "Active" ? "#22C55E40" : "#EF444440"}`,
+                        }}
+                      >
+                        {previewRecord.Status || "Active"}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--tx-dim)", marginTop: 4 }}>
+                      Créé le {previewRecord.CreatedAt ? new Date(previewRecord.CreatedAt).toLocaleDateString("fr-FR", { year: "numeric", month: "long", day: "numeric" }) : "—"}
+                      {previewRecord.UpdatedAt && ` · Mis à jour le ${new Date(previewRecord.UpdatedAt).toLocaleDateString("fr-FR", { year: "numeric", month: "long", day: "numeric" })}`}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <MSButton
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const rec = previewRecord;
+                      setPreviewRecord(null);
+                      openEdit(rec);
+                    }}
+                    icon={<Edit3 size={13} />}
+                  >
+                    Modifier
+                  </MSButton>
+                  <button
+                    onClick={() => setPreviewRecord(null)}
+                    style={{ background: "transparent", border: "none", color: "var(--tx-dim)", cursor: "pointer", fontSize: 20, padding: 4 }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {/* Grille des statistiques et métriques clés */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+                <div style={{ background: "var(--surf-2)", padding: "14px 16px", borderRadius: 10, border: "1px solid var(--bd)" }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase" }}>
+                    Publications / mois
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "var(--accent)", marginTop: 4 }}>
+                    {previewRecord["Publishing frequency"] ?? 0}
+                  </div>
+                </div>
+
+                <div style={{ background: "var(--surf-2)", padding: "14px 16px", borderRadius: 10, border: "1px solid var(--bd)" }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase" }}>
+                    Stories / mois
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "var(--tx)", marginTop: 4 }}>
+                    {previewRecord["Stories Frequency"] ?? 0}
+                  </div>
+                </div>
+
+                <div style={{ background: "var(--surf-2)", padding: "14px 16px", borderRadius: 10, border: "1px solid var(--bd)" }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase" }}>
+                    Langues
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--tx)", marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {languages.length > 0 ? languages.join(", ") : "Non spécifié"}
+                  </div>
+                </div>
+
+                <div style={{ background: "var(--surf-2)", padding: "14px 16px", borderRadius: 10, border: "1px solid var(--bd)" }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase" }}>
+                    Formats créatifs
+                  </div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--tx)", marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {creatives.length > 0 ? creatives.join(", ") : "Tous"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Canaux de diffusion */}
               <div>
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 8 }}>
-                  Logos officiels
+                  Canaux de diffusion actifs
                 </div>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  {previewRecord.Logo.map((l, idx) => (
-                    <a key={idx} href={l.url} target="_blank" rel="noreferrer" style={{ display: "block", border: "1px solid var(--bd)", borderRadius: 8, padding: 6, background: "#fff" }}>
-                      <img src={l.url} alt={l.title || "Logo"} style={{ height: 48, objectFit: "contain" }} />
-                    </a>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {channels.map((ch) => (
+                    <span
+                      key={ch}
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        padding: "5px 12px",
+                        borderRadius: 8,
+                        background: "var(--surf-inset)",
+                        border: "1px solid var(--bd)",
+                        color: "var(--tx)",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <Globe size={13} style={{ color: "var(--accent)" }} />
+                      {ch}
+                    </span>
                   ))}
                 </div>
               </div>
-            )}
 
-            {/* About */}
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 6 }}>
-                Description de la marque
-              </div>
-              <div style={{ fontSize: 13, color: "var(--tx)", whiteSpace: "pre-wrap", lineHeight: 1.6, background: "var(--surf-2)", padding: 14, borderRadius: 8, border: "1px solid var(--bd)" }}>
-                {previewRecord["About Brand"] || "Aucune description fournie"}
-              </div>
-            </div>
-
-            {/* Liens réseaux */}
-            {previewRecord["SM Links"] && (
+              {/* Objectifs stratégiques */}
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 6 }}>
-                  Réseaux sociaux
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 8 }}>
+                  Objectifs Stratégiques ({objectives.length})
                 </div>
-                <div style={{ fontSize: 12.5, color: "var(--tx-2)", whiteSpace: "pre-wrap", background: "var(--surf-2)", padding: 12, borderRadius: 8, border: "1px solid var(--bd)", fontFamily: "JetBrains Mono, monospace" }}>
-                  {previewRecord["SM Links"]}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {objectives.map((obj) => (
+                    <span
+                      key={obj}
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 500,
+                        padding: "4px 10px",
+                        borderRadius: 6,
+                        background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                        color: "var(--accent)",
+                        border: "1px solid color-mix(in srgb, var(--accent) 25%, transparent)",
+                      }}
+                    >
+                      {obj}
+                    </span>
+                  ))}
                 </div>
               </div>
-            )}
 
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
-              <MSButton variant="primary" onClick={() => setPreviewRecord(null)}>
-                Fermer
-              </MSButton>
+              {/* Thématiques de contenu */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 8 }}>
+                  Thématiques de Contenu ({themes.length})
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {themes.map((th) => (
+                    <span
+                      key={th}
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 500,
+                        padding: "4px 10px",
+                        borderRadius: 6,
+                        background: "var(--surf-2)",
+                        color: "var(--tx-2)",
+                        border: "1px solid var(--bd)",
+                      }}
+                    >
+                      {getThemeDisplayLabel(th)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Description de la marque */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 8 }}>
+                  Description & Identité de Marque (About Brand)
+                </div>
+                <div
+                  style={{
+                    fontSize: 13,
+                    color: "var(--tx)",
+                    whiteSpace: "pre-wrap",
+                    lineHeight: 1.65,
+                    background: "var(--surf-2)",
+                    padding: 16,
+                    borderRadius: 10,
+                    border: "1px solid var(--bd)",
+                    maxHeight: 280,
+                    overflowY: "auto",
+                  }}
+                >
+                  {previewRecord["About Brand"] || "Aucune description fournie"}
+                </div>
+              </div>
+
+              {/* Stratégie Social Media Détails (si présente) */}
+              {previewRecord["Social Media Strategy (Details)"] && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 8 }}>
+                    Détails de la Stratégie Social Media
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: "var(--tx-2)",
+                      whiteSpace: "pre-wrap",
+                      lineHeight: 1.6,
+                      background: "var(--surf-2)",
+                      padding: 14,
+                      borderRadius: 10,
+                      border: "1px solid var(--bd)",
+                    }}
+                  >
+                    {previewRecord["Social Media Strategy (Details)"]}
+                  </div>
+                </div>
+              )}
+
+              {/* Logos & Inspirations visuelles */}
+              {(logos.length > 0 || inspirations.length > 0) && (
+                <div style={{ display: "grid", gridTemplateColumns: logos.length > 0 && inspirations.length > 0 ? "1fr 1fr" : "1fr", gap: 16 }}>
+                  {logos.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 8 }}>
+                        Logos officiels ({logos.length})
+                      </div>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        {logos.map((l, idx) => (
+                          <a
+                            key={idx}
+                            href={l.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              display: "block",
+                              border: "1px solid var(--bd)",
+                              borderRadius: 8,
+                              padding: 6,
+                              background: "#fff",
+                              transition: "transform 0.15s ease",
+                            }}
+                          >
+                            <img src={l.url} alt={l.title || "Logo"} style={{ height: 48, objectFit: "contain" }} />
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {inspirations.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 8 }}>
+                        Inspirations de design ({inspirations.length})
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {inspirations.map((insp, idx) => (
+                          <a
+                            key={idx}
+                            href={insp.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              display: "block",
+                              width: 54,
+                              height: 54,
+                              borderRadius: 8,
+                              overflow: "hidden",
+                              border: "1px solid var(--bd)",
+                            }}
+                          >
+                            <img src={insp.url} alt="Inspiration" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Liens réseaux sociaux */}
+              {previewRecord["SM Links"] && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", textTransform: "uppercase", marginBottom: 8 }}>
+                    Réseaux Sociaux (SM Links)
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 12.5,
+                      color: "var(--tx-2)",
+                      whiteSpace: "pre-wrap",
+                      background: "var(--surf-2)",
+                      padding: 14,
+                      borderRadius: 10,
+                      border: "1px solid var(--bd)",
+                      fontFamily: "JetBrains Mono, monospace",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {previewRecord["SM Links"]}
+                  </div>
+                </div>
+              )}
+
+              {/* Footer */}
+              <div style={{ display: "flex", justifyContent: "flex-end", borderTop: "1px solid var(--bd)", paddingTop: 16 }}>
+                <MSButton variant="primary" onClick={() => setPreviewRecord(null)}>
+                  Fermer
+                </MSButton>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
