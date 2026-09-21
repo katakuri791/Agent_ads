@@ -8,8 +8,9 @@ import { useToast } from "../providers/ToastProvider";
 import { useAccount } from "../providers/AccountProvider";
 import { useTheme, type ThemeMode } from "../providers/ThemeProvider";
 import { useMetaAccounts, useAccountMutations, type AccountPatch } from "../hooks/useMetaAccounts";
+import { TybotSettingsTab } from "../components/settings/TybotSettingsTab";
 
-const SETTINGS_TABS = ["Profile", "Meta API Keys", "Appearance"];
+const SETTINGS_TABS = ["Brand & Strategy", "Meta API Keys", "Profile", "Appearance"];
 const inputStyle: CSSProperties = { height: 40, background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 8, padding: "0 12px", fontSize: 14, color: "var(--tx-2)", fontFamily: "IBM Plex Sans", outline: "none", width: "100%" };
 
 function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
@@ -271,7 +272,7 @@ function AppearanceTab() {
 }
 
 export function SettingsPage({ user, onUserChange, onLogout }: { user: AuthUser; onUserChange: (u: AuthUser) => void; onLogout: () => void }) {
-  const [tab, setTab] = useState("Meta API Keys");
+  const [tab, setTab] = useState("Brand & Strategy");
   const [confirmLogout, setConfirmLogout] = useState(false);
   return (
     <div style={{ display: "flex", gap: 32, alignItems: "flex-start" }}>
@@ -284,7 +285,8 @@ export function SettingsPage({ user, onUserChange, onLogout }: { user: AuthUser;
           <LogOut size={15} /> Se déconnecter
         </button>
       </div>
-      <div style={{ flex: 1, maxWidth: 720, minWidth: 0 }}>
+      <div style={{ flex: 1, maxWidth: 940, minWidth: 0 }}>
+        {tab === "Brand & Strategy" && <TybotSettingsTab />}
         {tab === "Profile" && <ProfileTab user={user} onUserChange={onUserChange} />}
         {tab === "Meta API Keys" && <AccountsTab />}
         {tab === "Appearance" && <AppearanceTab />}
