@@ -3,17 +3,18 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Plus, X, RefreshCw, Trash2, Send, Clock,
   Calendar as CalendarIcon, Image as ImageIcon, Film, Link2, FileText, Loader2, Lock,
-  LayoutGrid, TrendingUp, Facebook, Instagram,
+  LayoutGrid, TrendingUp, Facebook, Instagram, Linkedin, Twitter, Smartphone, Sparkles,
 } from "lucide-react";
 import { api, ApiError, type ScheduledPost, type ScheduledPostType, type PageBestTimes } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { Card, Tabs, MSButton, SlidePanel, LoadingOverlay } from "../components/ms/primitives";
 import { ConnectPrompt, ErrorState } from "../components/shared/states";
 import { useScheduledPosts, errStatus, errMessage } from "../hooks/useMetaData";
+import { useTybotPosts, useCreateTybotPost, useDeleteTybotPost, useUpdateTybotPost, useTybotUploadMedia, type TybotPost } from "../hooks/useTybotPosts";
 import { useAccount } from "../providers/AccountProvider";
 import { useToast } from "../providers/ToastProvider";
 
-// ─── Helpers de type de post ────────────────────────────────────
+
 const TYPE_COLOR: Record<ScheduledPostType, string> = {
   text: "#22C55E", image: "#1877F2", video: "#A855F7", link: "#06B6D4", carousel: "#F59E0B",
 };
@@ -44,7 +45,7 @@ const startOfMondayWeek = (d: Date) => addDays(startOfDay(d), -weekIdx(d));
 const fmtTime = (d: Date) => { const h = d.getHours(), m = d.getMinutes(); const ap = h < 12 ? "am" : "pm"; const h12 = ((h + 11) % 12) + 1; return `${h12}:${String(m).padStart(2, "0")} ${ap}`; };
 const fmtHourLabel = (h: number) => { const ap = h < 12 ? "am" : "pm"; const h12 = ((h + 11) % 12) + 1; return `${h12} ${ap}`; };
 
-interface SchedPost extends ScheduledPost { when: Date }
+interface SchedPost extends ScheduledPost { when: Date; isTybot?: boolean; tybotData?: TybotPost; }
 
 const isPast = (p: SchedPost) => p.when < new Date();
 
@@ -52,18 +53,19 @@ const isPast = (p: SchedPost) => p.when < new Date();
 function PostChip({ post, onClick, compact }: { post: SchedPost; onClick: (p: SchedPost) => void; compact?: boolean }) {
   const col = TYPE_COLOR[post.type] || "#1877F2";
   const past = isPast(post);
+  const displayMsg = post.message || TYPE_LABEL[post.type];
+  const truncatedMsg = displayMsg.length > 40 ? displayMsg.slice(0, 40) + "..." : displayMsg;
   return (
     <button onClick={(e) => { e.stopPropagation(); onClick(post); }}
       className={"ms-sched-chip" + (past ? " ms-sched-past" : "")}
       title={past ? "Déjà publié · cliquer pour voir le détail" : undefined}
       style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: compact ? "3px 7px" : "5px 8px", borderRadius: 8, background: col + "18", border: "1px solid " + col + "40", color: "var(--tx)", cursor: "pointer", fontFamily: "IBM Plex Sans", fontSize: compact ? 10.5 : 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
       <span style={{ color: col, display: "inline-flex", flexShrink: 0 }}><TypeIcon type={post.type} size={compact ? 10 : 12} /></span>
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{post.message || TYPE_LABEL[post.type]}</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{truncatedMsg}</span>
     </button>
   );
 }
 
-// ─── Vue Mois ───────────────────────────────────────────────────
 function MonthView({ cursor, posts, today, onCellClick, onPostClick }: {
   cursor: Date; posts: SchedPost[]; today: Date; onCellClick: (d: Date) => void; onPostClick: (p: SchedPost) => void;
 }) {
@@ -130,23 +132,23 @@ function WeekView({ cursor, posts, today, onCellClick, onPostClick }: {
             {dayPosts.length === 0
               ? <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontSize: 11.5, textAlign: "center", padding: 14 }}>+ Cliquer pour planifier</div>
               : <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {dayPosts.map((p) => {
-                    const past = isPast(p);
-                    return (
-                      <div key={p.id} onClick={(e) => { e.stopPropagation(); onPostClick(p); }}
-                        className={"ms-sched-week-card" + (past ? " ms-sched-past" : "")}
-                        title={past ? "Déjà publié · cliquer pour voir le détail" : undefined}
-                        style={{ background: TYPE_COLOR[p.type] + "15", border: "1px solid " + TYPE_COLOR[p.type] + "40", borderRadius: 12, padding: 12, cursor: "pointer" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                          <span style={{ width: 24, height: 24, borderRadius: 7, background: TYPE_COLOR[p.type] + "22", color: TYPE_COLOR[p.type], display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><TypeIcon type={p.type} size={13} /></span>
-                          <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)" }}>{fmtTime(p.when)}</span>
-                          {past && <span style={{ fontSize: 9.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", marginLeft: "auto" }}>Publié</span>}
-                        </div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--tx)", lineHeight: 1.35, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.message || TYPE_LABEL[p.type]}</div>
+                {dayPosts.map((p) => {
+                  const past = isPast(p);
+                  return (
+                    <div key={p.id} onClick={(e) => { e.stopPropagation(); onPostClick(p); }}
+                      className={"ms-sched-week-card" + (past ? " ms-sched-past" : "")}
+                      title={past ? "Déjà publié · cliquer pour voir le détail" : undefined}
+                      style={{ background: TYPE_COLOR[p.type] + "15", border: "1px solid " + TYPE_COLOR[p.type] + "40", borderRadius: 12, padding: 12, cursor: "pointer" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                        <span style={{ width: 24, height: 24, borderRadius: 7, background: TYPE_COLOR[p.type] + "22", color: TYPE_COLOR[p.type], display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><TypeIcon type={p.type} size={13} /></span>
+                        <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)" }}>{fmtTime(p.when)}</span>
+                        {past && <span style={{ fontSize: 9.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--tx-dim)", marginLeft: "auto" }}>Publié</span>}
                       </div>
-                    );
-                  })}
-                </div>}
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--tx)", lineHeight: 1.35, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.message || TYPE_LABEL[p.type]}</div>
+                    </div>
+                  );
+                })}
+              </div>}
           </div>
         );
       })}
@@ -190,7 +192,9 @@ function DayView({ cursor, posts, today, onCellClick, onPostClick }: {
                     <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "var(--tx-2)" }}>{fmtTime(p.when)}</span>
                     <span style={{ fontSize: 10.5, color: "var(--tx-dim)", marginLeft: "auto" }}>{isPast(p) ? "Publié" : TYPE_LABEL[p.type]}</span>
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--tx)", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.message || TYPE_LABEL[p.type]}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--tx)", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {(p.message || TYPE_LABEL[p.type]).length > 50 ? (p.message || TYPE_LABEL[p.type]).slice(0, 50) + "..." : (p.message || TYPE_LABEL[p.type])}
+                  </div>
                 </div>
               );
             })}
@@ -324,7 +328,10 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
   open: boolean; initialDate: Date | null; accountId: string | null; onClose: () => void; onDone: () => void;
 }) {
   const toast = useToast();
-  const [platform, setPlatform] = useState<"facebook" | "instagram">("facebook");
+  const createTybotM = useCreateTybotPost();
+  const updateTybotM = useUpdateTybotPost();
+  const uploadMediaM = useTybotUploadMedia();
+  const [platform, setPlatform] = useState<"facebook" | "instagram" | "linkedin" | "x" | "tiktok">("facebook");
   const [type, setType] = useState<ScheduledPostType>("image");
   const [message, setMessage] = useState("");
   const [link, setLink] = useState("");
@@ -374,14 +381,45 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
     setTime(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`);
   }, [open, initialDate]);
 
-  const todayStr = (() => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`; })();
+  // Auto-read file as data URL for Tybot attachment
+  useEffect(() => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => { if (e.target?.result) console.log("Tybot file ready:", typeof e.target.result); };
+    reader.readAsDataURL(file);
+  }, [file]);
+
+  const todayStr = (() => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; })();
   const minTimeStr = date === todayStr
-    ? (() => { const m = new Date(Date.now() + 10*60*1000); return `${String(m.getHours()).padStart(2,"0")}:${String(m.getMinutes()).padStart(2,"0")}`; })()
+    ? (() => { const m = new Date(Date.now() + 10 * 60 * 1000); return `${String(m.getHours()).padStart(2, "0")}:${String(m.getMinutes()).padStart(2, "0")}`; })()
     : undefined;
 
   const mutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const when = new Date(`${date}T${time}:00`);
+      
+      // 1) Création dans Tybot
+      const created = await createTybotM.mutateAsync({
+        "Generated description": message,
+        Calendar: when.toISOString(),
+        "Publishing date": when.toISOString(),
+        "Creative type": type === "image" ? "Photo" : type === "video" ? "Vidéo" : type === "link" ? "Lien" : "Texte",
+        Channels: platform === "instagram" ? "Instagram" : platform === "linkedin" ? "LinkedIn" : platform === "x" ? "X" : platform === "tiktok" ? "TikTok" : "Facebook",
+        Statut: "Scheduled",
+      });
+
+      // 2) Upload direct de l'image/vidéo vers Tybot domain storage et mise à jour
+      if (file && created?.Id && (type === "image" || type === "video")) {
+        const uploadRes = await uploadMediaM.mutateAsync(file);
+        if (uploadRes.url) {
+          await updateTybotM.mutateAsync({
+            Id: created.Id,
+            "Creative (Attachment)": [{ title: file.name, url: uploadRes.url }],
+          });
+        }
+      }
+
+      // 2) Planification Meta
       if (platform === "instagram") {
         return api.createScheduledPost({
           scheduledTime: when.toISOString(),
@@ -401,7 +439,7 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
       }, accountId);
     },
     onSuccess: () => {
-      const dest = platform === "instagram" ? "Instagram" : "Facebook";
+      const dest = platform === "instagram" ? "Instagram" : platform === "linkedin" ? "LinkedIn" : platform === "x" ? "X" : platform === "tiktok" ? "TikTok" : "Facebook";
       toast("Post planifié", { kind: "success", msg: `Il sera publié automatiquement sur ${dest}.` });
       onDone();
     },
@@ -412,7 +450,7 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
     const when = new Date(`${date}T${time}:00`);
     if (isNaN(when.getTime())) { toast("Date invalide", { kind: "error", msg: "Vérifie la date et l'heure." }); return; }
     if (when.getTime() < Date.now() + 10 * 60 * 1000) {
-      toast("Créneau trop tôt", { kind: "error", msg: "La date doit être au moins 10 minutes dans le futur (contrainte Meta)." });
+      toast("Créneau trop tôt", { kind: "error", msg: "La date doit être au moins 10 minutes dans le futur." });
       return;
     }
     if (platform === "instagram" && !igMediaUrl.trim()) {
@@ -424,7 +462,7 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
 
   if (!open) return null;
   const needsMedia = platform === "facebook" && (type === "image" || type === "video");
-  const canSubmit = !mutation.isPending && !!date && !!time && (
+  const canSubmit = !mutation.isPending && !createTybotM.isPending && !!date && !!time && (
     platform === "instagram"
       ? igMediaUrl.trim().startsWith("http")
       : Boolean(message.trim() || file || (type === "link" && link.trim()))
@@ -447,38 +485,38 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
           {/* Sélecteur de plateforme : Facebook ou Instagram */}
           <div>
             <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Publier sur</label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              {(["facebook", "instagram"] as const).map((p) => {
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              {(["facebook", "instagram", "linkedin", "x", "tiktok"] as const).map((p) => {
                 const active = platform === p;
-                const col = p === "facebook" ? "#1877F2" : "#E1306C";
-                const Icon = p === "facebook" ? Facebook : Instagram;
+                const col = p === "facebook" ? "#1877F2" : p === "instagram" ? "#E1306C" : p === "linkedin" ? "#0A66C2" : p === "x" ? "#000000" : "#00f2fe";
+                const Icon = p === "facebook" ? Facebook : p === "instagram" ? Instagram : p === "linkedin" ? Linkedin : p === "x" ? Twitter : Smartphone;
                 return (
                   <button key={p} onClick={() => setPlatform(p)} className="ms-btn"
                     style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "10px 14px", borderRadius: 10, cursor: "pointer", background: active ? col + "14" : "var(--surf-inset)", border: "1.5px solid " + (active ? col : "var(--bd)"), color: active ? col : "var(--tx-3)" }}>
                     <Icon size={16} />
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{p === "facebook" ? "Facebook" : "Instagram"}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{p === "facebook" ? "Facebook" : p === "instagram" ? "Instagram" : p === "linkedin" ? "LinkedIn" : p === "x" ? "X" : "TikTok"}</span>
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {platform === "facebook" && (
-          <div>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Type de post</label>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-              {COMPOSE_TYPES.map((t) => {
-                const active = type === t; const col = TYPE_COLOR[t];
-                return (
-                  <button key={t} onClick={() => { setType(t); setFile(null); }} className="ms-btn"
-                    style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "11px 6px", borderRadius: 12, cursor: "pointer", background: active ? col + "18" : "var(--surf-inset)", border: "1.5px solid " + (active ? col : "var(--bd)"), color: active ? col : "var(--tx-3)" }}>
-                    <span style={{ display: "inline-flex" }}><TypeIcon type={t} size={18} /></span>
-                    <span style={{ fontSize: 11, fontWeight: 500 }}>{TYPE_LABEL[t]}</span>
-                  </button>
-                );
-              })}
+          {platform !== "instagram" && (
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Type de post</label>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                {COMPOSE_TYPES.map((t) => {
+                  const active = type === t; const col = TYPE_COLOR[t];
+                  return (
+                    <button key={t} onClick={() => { setType(t); setFile(null); }} className="ms-btn"
+                      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "11px 6px", borderRadius: 12, cursor: "pointer", background: active ? col + "18" : "var(--surf-inset)", border: "1.5px solid " + (active ? col : "var(--bd)"), color: active ? col : "var(--tx-3)" }}>
+                      <span style={{ display: "inline-flex" }}><TypeIcon type={t} size={18} /></span>
+                      <span style={{ fontSize: 11, fontWeight: 500 }}>{TYPE_LABEL[t]}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
           )}
           <div>
             <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>
@@ -537,6 +575,8 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
               </label>
             </div>
           )}
+
+          {/* ── URL image Tybot — supprimée, remplacée par auto-lecture du fichier */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--tx-2)", marginBottom: 8 }}>Date</label>
@@ -574,13 +614,47 @@ function PostDetail({ post, accountId, onClose, onChanged }: {
   post: SchedPost | null; accountId: string | null; onClose: () => void; onChanged: () => void;
 }) {
   const toast = useToast();
+  const deleteTybotM = useDeleteTybotPost();
+  
+  const publishTybotM = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("https://webhook.tybotflow.com/webhook/auto-post", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(post?.tybotData || post),
+      });
+      if (!res.ok) throw new Error("Erreur lors de l'appel au webhook");
+    },
+    onSuccess: () => { toast("Publié", { kind: "success", msg: "Le webhook a été déclenché." }); onChanged(); },
+    onError: (e) => toast("Échec de la publication", { kind: "error", msg: e instanceof Error ? e.message : undefined }),
+  });
+
+  const regenDescM = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("https://webhook.tybotflow.com/webhook/description", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(post?.tybotData || post),
+      });
+      if (!res.ok) throw new Error("Erreur lors de la régénération");
+    },
+    onSuccess: () => { toast("Description régénérée", { kind: "success", msg: "La nouvelle description a été générée." }); onChanged(); },
+    onError: (e) => toast("Échec de la régénération", { kind: "error", msg: e instanceof Error ? e.message : undefined }),
+  });
+
   const publishM = useMutation({
     mutationFn: () => api.publishScheduledPost(post!.id, accountId),
     onSuccess: () => { toast("Publié", { kind: "success" }); onChanged(); },
     onError: (e) => toast("Échec de la publication", { kind: "error", msg: e instanceof ApiError ? e.message : undefined }),
   });
   const deleteM = useMutation({
-    mutationFn: () => api.deleteScheduledPost(post!.id, accountId),
+    mutationFn: () => {
+      if (post?.isTybot) {
+        // ID format was `tybot-123`, we need the raw ID to delete
+        return deleteTybotM.mutateAsync(Number(post.id.replace("tybot-", "")));
+      }
+      return api.deleteScheduledPost(post!.id, accountId);
+    },
     onSuccess: () => { toast("Post supprimé", { kind: "success" }); onChanged(); },
     onError: (e) => toast("Échec de la suppression", { kind: "error", msg: e instanceof ApiError ? e.message : undefined }),
   });
@@ -608,9 +682,11 @@ function PostDetail({ post, accountId, onClose, onChanged }: {
           : <div style={{ aspectRatio: "4/3", maxHeight: 240, borderRadius: 14, background: "repeating-linear-gradient(45deg, var(--surf-inset), var(--surf-inset) 8px, var(--surf-2) 8px, var(--surf-2) 16px)", border: "1px solid var(--bd)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontFamily: "JetBrains Mono", fontSize: 11, letterSpacing: ".08em" }}>{TYPE_LABEL[post.type].toUpperCase()}</div>}
         <div style={{ fontSize: 14, color: "var(--tx-2)", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{post.message || <span style={{ color: "var(--tx-dim)" }}>(sans texte)</span>}</div>
       </div>
-      <div style={{ padding: 18, borderTop: "1px solid var(--bd)", display: "flex", gap: 8 }}>
+      <div style={{ padding: 18, borderTop: "1px solid var(--bd)", display: "flex", flexWrap: "wrap", gap: 8 }}>
         <MSButton variant="outline" danger onClick={() => deleteM.mutate()} disabled={deleteM.isPending} icon={<Trash2 size={14} />} style={{ marginRight: "auto" }}>Supprimer</MSButton>
-        {post.status === "scheduled" && <MSButton variant="primary" onClick={() => publishM.mutate()} disabled={publishM.isPending} icon={publishM.isPending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}>Publier maintenant</MSButton>}
+        {post.isTybot && <MSButton variant="outline" onClick={() => regenDescM.mutate()} disabled={regenDescM.isPending} icon={regenDescM.isPending ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}>Régénérer</MSButton>}
+        {post.status === "scheduled" && !post.isTybot && <MSButton variant="primary" onClick={() => publishM.mutate()} disabled={publishM.isPending} icon={publishM.isPending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}>Publier maintenant</MSButton>}
+        {post.status === "scheduled" && post.isTybot && <MSButton variant="primary" onClick={() => publishTybotM.mutate()} disabled={publishTybotM.isPending} icon={publishTybotM.isPending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}>Publier maintenant</MSButton>}
       </div>
     </div>
   );
@@ -621,6 +697,7 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
   const { selectedAccountId } = useAccount();
   const qc = useQueryClient();
   const q = useScheduledPosts();
+  const tybotQuery = useTybotPosts();
   const today = useMemo(() => new Date(), []);
   const [cursor, setCursor] = useState<Date>(() => new Date());
   const [view, setView] = useState<"Jour" | "Semaine" | "Mois">("Mois");
@@ -633,11 +710,33 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
   const [compose, setCompose] = useState<{ open: boolean; date: Date | null }>({ open: false, date: null });
   const [selected, setSelected] = useState<SchedPost | null>(null);
 
-  const posts: SchedPost[] = useMemo(
+  const metaPosts: SchedPost[] = useMemo(
     () => (q.data?.posts || []).map((p) => ({ ...p, when: p.scheduled_time ? new Date(p.scheduled_time) : new Date() })),
     [q.data],
   );
-  const refresh = () => qc.invalidateQueries({ queryKey: qk.scheduledPosts(selectedAccountId) });
+
+  const tybotPostsList: SchedPost[] = useMemo(() => {
+    return (tybotQuery.data || []).map((tp) => ({
+      id: `tybot-${tp.Id}`,
+      message: tp["Generated description"] || tp["Generated idea"] || "",
+      type: "image",
+      status: tp.Statut?.toLowerCase() === "published" ? "published" : "scheduled",
+      scheduled_time: tp["Publishing date"],
+      when: tp["Publishing date"] ? new Date(tp["Publishing date"]) : new Date(),
+      platform: "facebook",
+      isTybot: true,
+      tybotData: tp,
+      full_picture: tp["Creative (Attachment)"]?.[0]?.url || "",
+      created_time: tp.CreatedAt,
+    } as SchedPost));
+  }, [tybotQuery.data]);
+
+  const posts: SchedPost[] = useMemo(() => [...metaPosts, ...tybotPostsList], [metaPosts, tybotPostsList]);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: qk.scheduledPosts(selectedAccountId) });
+    qc.invalidateQueries({ queryKey: ["tybot-posts"] });
+  };
 
   // Avance / recule le curseur d'un pas selon la vue active (mois, semaine, jour).
   // setCursor en update fonctionnel → pas besoin de `cursor` en dépendance.
@@ -714,46 +813,46 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
       )}
 
       <div className="ms-stagger" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 240 }}>
-          <h2 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 24, color: "var(--tx)", margin: 0, letterSpacing: "-.01em" }}>Planning de publication</h2>
-          <p style={{ fontSize: 13.5, color: "var(--tx-dim)", margin: "6px 0 0", maxWidth: 560, lineHeight: 1.5 }}>{scheduledCount === 0
-            ? "Aucun post en file. Clique une date du calendrier pour planifier ta première publication ; Meta s'en charge à l'heure dite."
-            : `${scheduledCount} post${scheduledCount > 1 ? "s" : ""} en file${todayCount > 0 ? `, dont ${todayCount} aujourd'hui` : ""}. Clique une date pour en ajouter un ; Meta publie automatiquement.`}</p>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <h2 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 24, color: "var(--tx)", margin: 0, letterSpacing: "-.01em" }}>Planning de publication</h2>
+            <p style={{ fontSize: 13.5, color: "var(--tx-dim)", margin: "6px 0 0", maxWidth: 560, lineHeight: 1.5 }}>{scheduledCount === 0
+              ? "Aucun post en file. Clique une date du calendrier pour planifier ta première publication ; Meta s'en charge à l'heure dite."
+              : `${scheduledCount} post${scheduledCount > 1 ? "s" : ""} en file${todayCount > 0 ? `, dont ${todayCount} aujourd'hui` : ""}. Clique une date pour en ajouter un ; Meta publie automatiquement.`}</p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <Tabs tabs={["Calendrier", "Bibliothèque"]} value={mode} onChange={(t) => setMode(t as "Calendrier" | "Bibliothèque")} />
+            <MSButton variant="outline" icon={<RefreshCw size={14} />} onClick={refresh}>Rafraîchir</MSButton>
+            <MSButton variant="primary" icon={<Plus size={16} />} onClick={() => setCompose({ open: true, date: cursor })}>Planifier</MSButton>
+          </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <Tabs tabs={["Calendrier", "Bibliothèque"]} value={mode} onChange={(t) => setMode(t as "Calendrier" | "Bibliothèque")} />
-          <MSButton variant="outline" icon={<RefreshCw size={14} />} onClick={refresh}>Rafraîchir</MSButton>
-          <MSButton variant="primary" icon={<Plus size={16} />} onClick={() => setCompose({ open: true, date: cursor })}>Planifier</MSButton>
-        </div>
-      </div>
 
-      {mode === "Calendrier" ? (
-        <>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <button onClick={navPrev} aria-label="Période précédente" title="Précédent (←)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronLeft size={16} /></button>
-              <button onClick={navNext} aria-label="Période suivante" title="Suivant (→)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronRight size={16} /></button>
-              <div style={{ padding: "0 6px", minWidth: 220, overflow: "hidden" }}>
-                <div key={`lbl-${nav.seq}`} className={labelClass} style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)", textTransform: "capitalize" }}>{headerLabel}</div>
+        {mode === "Calendrier" ? (
+          <>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button onClick={navPrev} aria-label="Période précédente" title="Précédent (←)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronLeft size={16} /></button>
+                <button onClick={navNext} aria-label="Période suivante" title="Suivant (→)" className="ms-icon-btn" style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surf-card)", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><ChevronRight size={16} /></button>
+                <div style={{ padding: "0 6px", minWidth: 220, overflow: "hidden" }}>
+                  <div key={`lbl-${nav.seq}`} className={labelClass} style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 18, color: "var(--tx)", textTransform: "capitalize" }}>{headerLabel}</div>
+                </div>
+                <MSButton variant="outline" size="sm" onClick={goToday} disabled={periodHasToday} title={periodHasToday ? "Tu y es déjà" : "Revenir à aujourd'hui"}>Aujourd'hui</MSButton>
               </div>
-              <MSButton variant="outline" size="sm" onClick={goToday} disabled={periodHasToday} title={periodHasToday ? "Tu y es déjà" : "Revenir à aujourd'hui"}>Aujourd'hui</MSButton>
+              <Tabs tabs={["Jour", "Semaine", "Mois"]} value={view} onChange={(t) => changeView(t as "Jour" | "Semaine" | "Mois")} />
             </div>
-            <Tabs tabs={["Jour", "Semaine", "Mois"]} value={view} onChange={(t) => changeView(t as "Jour" | "Semaine" | "Mois")} />
-          </div>
 
-          <div style={{ overflow: "hidden" }}>
-            <div key={`view-${nav.seq}`} className={calClass}>{viewNode}</div>
+            <div style={{ overflow: "hidden" }}>
+              <div key={`view-${nav.seq}`} className={calClass}>{viewNode}</div>
+            </div>
+          </>
+        ) : (
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--tx-dim)", marginBottom: 4 }}>
+              <LayoutGrid size={14} /> {posts.length} post{posts.length > 1 ? "s" : ""} · planifiés &amp; publiés
+            </div>
+            <LibraryView posts={posts} onPostClick={setSelected} />
           </div>
-        </>
-      ) : (
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--tx-dim)", marginBottom: 4 }}>
-            <LayoutGrid size={14} /> {posts.length} post{posts.length > 1 ? "s" : ""} · planifiés &amp; publiés
-          </div>
-          <LibraryView posts={posts} onPostClick={setSelected} />
-        </div>
-      )}
+        )}
       </div>
 
       <ComposeModal open={compose.open} initialDate={compose.date} accountId={selectedAccountId}

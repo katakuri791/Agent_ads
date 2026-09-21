@@ -966,4 +966,55 @@ export const api = {
       headers: clientToken ? { "X-Client-Token": clientToken } : {},
     });
   },
+
+  // ─── Creative Ideas ────────────────────────────────────────────────────────
+  getCreativeIdeas: (limit = 50, offset = 0, search?: string) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (search) params.append("search", search);
+    return request<CreativeIdeasResponse>(`/creative-ideas?${params.toString()}`);
+  },
+
+  createCreativeIdea: (body: Partial<CreativeIdea>) =>
+    request<CreativeIdea>("/creative-ideas", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateCreativeIdea: (id: number, body: Partial<CreativeIdea>) =>
+    request<any>(`/creative-ideas/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deleteCreativeIdea: (id: number) =>
+    request<{ success: boolean; id: number }>(`/creative-ideas/${id}`, {
+      method: "DELETE",
+    }),
 };
+
+export interface CreativeIdea {
+  Id: number;
+  CreatedAt?: string;
+  UpdatedAt?: string;
+  Calendar?: string;
+  "Generated idea"?: string;
+  "Post type"?: string;
+  Channels?: string;
+  "Post Language"?: string;
+  "Creative type"?: string;
+  "Strategic objectives"?: string | null;
+  "Content themes"?: string | null;
+  Improvement?: string | null;
+  Status?: string;
+}
+
+export interface CreativeIdeasResponse {
+  list: CreativeIdea[];
+  pageInfo?: {
+    totalRows: number;
+    page: number;
+    pageSize: number;
+    isFirstPage: boolean;
+    isLastPage: boolean;
+  };
+}

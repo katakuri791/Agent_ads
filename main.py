@@ -43,6 +43,7 @@ from api.search.route import router as search_router
 from api.sessions.route import router as sessions_router
 from api.settings.route import router as settings_router
 from api.sync.route import router as sync_router
+from api.creative_ideas.route import router as creative_ideas_router
 
 logger = logging.getLogger("metainsight")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -187,5 +188,6 @@ for _router in (
     sessions_router,
     chat_router,
     agent_router,
+    creative_ideas_router,
 ):
     app.include_router(_router)
