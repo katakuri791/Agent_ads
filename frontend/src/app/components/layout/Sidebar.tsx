@@ -1,11 +1,13 @@
 import {
-  LayoutDashboard, BarChart3, Facebook, Instagram, Users, CalendarClock, Sparkles, KeyRound, CreditCard, Settings as SettingsIcon, ChevronLeft, Lightbulb,
+  LayoutDashboard, BarChart3, Facebook, Instagram, Users, CalendarClock, Sparkles, KeyRound, CreditCard, Settings as SettingsIcon, ChevronLeft, Lightbulb, BrainCircuit, Compass,
 } from "lucide-react";
 
 export const NAV = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "campaigns", label: "Campaign Analysis", icon: BarChart3 },
   { id: "creative_ideas", label: "Creative Ideas", icon: Lightbulb },
+  { id: "brainstorming", label: "Brainstorming", icon: BrainCircuit },
+  { id: "strategy", label: "Strategy", icon: Compass },
   { id: "page", label: "Facebook Page", icon: Facebook },
   { id: "instagram", label: "Instagram", icon: Instagram },
   { id: "audiences", label: "Audience Insights", icon: Users },
@@ -17,7 +19,7 @@ export const NAV = [
 ];
 
 export const TITLES: Record<string, string> = {
-  overview: "Overview", campaigns: "Campaign Analysis", creative_ideas: "Creative Ideas", page: "Facebook Page",
+  overview: "Overview", campaigns: "Campaign Analysis", creative_ideas: "Creative Ideas", creative_ideas_blog: "Blog Ideas", brainstorming: "Brainstorming", brainstorming_blog: "Brainstorming Blog", strategy: "Strategy", page: "Facebook Page",
   instagram: "Instagram", audiences: "Audience Insights", schedule: "Schedule",
   access: "Accès", payment: "Paiement", ai: "AI Agent", settings: "Settings",
 };

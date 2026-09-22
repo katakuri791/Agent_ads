@@ -25,14 +25,22 @@ import {
   Target,
   Bookmark,
   Globe2,
+  Loader2,
+  Zap,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
 import { api, type CreativeIdea } from "../lib/api";
-import { Card, MSButton, SearchBar, SlidePanel } from "../components/ms/primitives";
+import { Card, MSButton, SearchBar, SlidePanel, Tabs } from "../components/ms/primitives";
 import { useToast } from "../providers/ToastProvider";
+import { BlogIdeasView } from "../components/creative_ideas/BlogIdeasView";
 
 interface CreativeIdeasPageProps {
   onAskAgent?: (prompt?: string) => void;
   onNavigate?: (pageId: string) => void;
+  initialTab?: "Réseaux Sociaux" | "Blog";
 }
 
 // ─── Options fournies pour les champs du formulaire ──────────────────────────
@@ -101,11 +109,86 @@ const DEFAULT_FORM: IdeaFormState = {
   "Post type": "Publication",
   "Strategic objectives": "Interaction communautaire",
   "Content themes": "Conseils & Astuces",
-  Status: "Valide",
+  Status: "",
 };
 
-export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageProps) {
+function renderStatusBadge(status?: string | null) {
+  const norm = (status || "").trim().toLowerCase();
+  if (norm === "valide") {
+    return (
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          padding: "2px 8px",
+          borderRadius: 999,
+          background: "rgba(34, 197, 94, 0.12)",
+          color: "#22C55E",
+          border: "1px solid rgba(34, 197, 94, 0.3)",
+        }}
+      >
+        Valide
+      </span>
+    );
+  }
+  if (norm === "invalide") {
+    return (
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          padding: "2px 8px",
+          borderRadius: 999,
+          background: "rgba(239, 68, 68, 0.12)",
+          color: "#EF4444",
+          border: "1px solid rgba(239, 68, 68, 0.3)",
+        }}
+      >
+        Invalide
+      </span>
+    );
+  }
+  if (status && status.trim()) {
+    return (
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 500,
+          padding: "2px 8px",
+          borderRadius: 999,
+          background: "var(--surf-1)",
+          color: "var(--tx-dim)",
+          border: "1px solid var(--bd)",
+        }}
+      >
+        {status}
+      </span>
+    );
+  }
+  return (
+    <span
+      style={{
+        fontSize: 11,
+        fontWeight: 500,
+        padding: "2px 8px",
+        borderRadius: 999,
+        background: "rgba(148, 163, 184, 0.1)",
+        color: "var(--tx-dim)",
+        border: "1px dashed var(--bd)",
+      }}
+    >
+      À valider
+    </span>
+  );
+}
+
+export function CreativeIdeasPage({ onAskAgent, onNavigate, initialTab = "Réseaux Sociaux" }: CreativeIdeasPageProps) {
   const toast = useToast();
+  const [mainTab, setMainTab] = useState<"Réseaux Sociaux" | "Blog">(() => {
+    const urlTab = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("tab") : null;
+    if (urlTab?.toLowerCase() === "blog") return "Blog";
+    return initialTab;
+  });
   const [ideas, setIdeas] = useState<CreativeIdea[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -117,6 +200,10 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
   const [selectedType, setSelectedType] = useState<string>("all");
   const [selectedStatus, setSelectedStatus] = useState<string>("all");
   const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(12);
 
   // Détail sélectionné pour le SlidePanel
   const [selectedIdea, setSelectedIdea] = useState<CreativeIdea | null>(null);
@@ -135,6 +222,62 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
   // Régénération d'idée via webhook
   const [regenerating, setRegenerating] = useState(false);
   const [regeneratingStep, setRegeneratingStep] = useState<string>("");
+
+  // Validation de l'idée vers le webhook Calendrier
+  const [validatingId, setValidatingId] = useState<number | null>(null);
+  const validating = validatingId !== null;
+
+  // Génération d'idées via webhook
+  const [generatingIdeas, setGeneratingIdeas] = useState(false);
+
+  // ─── Webhook: Générer des idées créatives (https://webhook.tybotflow.com/webhook/creative_idea) ────
+  const handleGenerateIdeas = async () => {
+    if (generatingIdeas) return;
+    setGeneratingIdeas(true);
+    try {
+      const res = await fetch("https://webhook.tybotflow.com/webhook/creative_idea", {
+        method: "GET",
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(errText || `Erreur serveur HTTP ${res.status}`);
+      }
+      toast("Génération d'idées lancée", {
+        kind: "success",
+        msg: "L'IA génère de nouvelles idées créatives. La liste va se rafraîchir dès qu'elles seront prêtes.",
+      });
+
+      // Polling : vérifier l'arrivée de nouvelles idées (jusqu'à 90s)
+      const prevCount = ideas.length;
+      const pollInterval = 3000;
+      const maxAttempts = 30;
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise((r) => setTimeout(r, pollInterval));
+        try {
+          const checkRes = await api.getCreativeIdeas(100, 0);
+          const newCount = (checkRes.list || []).length;
+          if (newCount > prevCount) {
+            setIdeas(checkRes.list || []);
+            toast("Nouvelles idées créatives disponibles !", {
+              kind: "success",
+              msg: `${newCount - prevCount} nouvelle(s) idée(s) ajoutée(s) par l'IA.`,
+            });
+            return;
+          }
+        } catch {
+          // Ignorer les erreurs temporaires lors du polling
+        }
+      }
+      await fetchIdeas(true);
+    } catch (err: any) {
+      toast("Échec de la génération", {
+        kind: "error",
+        msg: err?.message || "Erreur lors de la génération d'idées",
+      });
+    } finally {
+      setGeneratingIdeas(false);
+    }
+  };
 
   const fetchIdeas = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -179,6 +322,11 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
     return Array.from(set);
   }, [ideas]);
 
+  // Reset page when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, selectedChannel, selectedType, selectedStatus]);
+
   // Filtrage des données
   const filteredIdeas = useMemo(() => {
     return ideas.filter((idea) => {
@@ -202,12 +350,30 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
       const matchesType =
         selectedType === "all" || idea["Creative type"] === selectedType;
 
+      const normStatus = (idea.Status || "").toLowerCase().trim();
       const matchesStatus =
-        selectedStatus === "all" || idea.Status === selectedStatus;
+        selectedStatus === "all" ||
+        (selectedStatus === "valide" && normStatus === "valide") ||
+        (selectedStatus === "invalide" && normStatus === "invalide") ||
+        (selectedStatus === "pending" && normStatus !== "valide" && normStatus !== "invalide");
 
       return matchesSearch && matchesChannel && matchesType && matchesStatus;
     });
   }, [ideas, search, selectedChannel, selectedType, selectedStatus]);
+
+  // Pagination calculs
+  const totalPages = Math.max(1, Math.ceil(filteredIdeas.length / pageSize));
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(1);
+    }
+  }, [totalPages, currentPage]);
+
+  const paginatedIdeas = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize;
+    return filteredIdeas.slice(startIndex, startIndex + pageSize);
+  }, [filteredIdeas, currentPage, pageSize]);
 
   const handleCopy = (idea: CreativeIdea, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -303,6 +469,66 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
     }
   };
 
+  // ─── Validation de l'idée vers le webhook Calendrier ─────────────────────
+  const handleValidateIdea = async (idea: CreativeIdea) => {
+    if (validatingId !== null) return;
+    setValidatingId(idea.Id);
+    const prevStatus = idea.Status;
+    const validatedStatus = "Valide";
+
+    // 1. Mise à jour temps réel instantanée (optimiste) dans l'UI
+    setIdeas((prev) =>
+      prev.map((item) => (item.Id === idea.Id ? { ...item, Status: validatedStatus } : item))
+    );
+    if (selectedIdea && selectedIdea.Id === idea.Id) {
+      setSelectedIdea((prev) => (prev ? { ...prev, Status: validatedStatus } : null));
+    }
+
+    try {
+      // 2. Envoi vers le webhook Calendrier avec le statut "Valide"
+      const webhookPromise = fetch("https://webhook.tybotflow.com/webhook/Calendrier", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: idea.Id,
+          Calendar: idea.Calendar,
+          Channels: idea.Channels,
+          "Creative type": idea["Creative type"],
+          "Generated idea": idea["Generated idea"],
+          "Post Language": idea["Post Language"],
+          "Post type": idea["Post type"],
+          "Strategic objectives": idea["Strategic objectives"],
+          "Content themes": idea["Content themes"],
+          Status: validatedStatus,
+        }),
+      });
+
+      // 3. Persistance du statut dans la base de données (SmartDB)
+      const dbPromise = api.updateCreativeIdea(idea.Id, { Status: validatedStatus }).catch((dbErr) => {
+        console.warn("Avertissement mise à jour statut en DB locale :", dbErr);
+      });
+
+      const [res] = await Promise.all([webhookPromise, dbPromise]);
+      if (!res.ok) throw new Error(`Webhook error: ${res.status}`);
+
+      toast("Idée validée avec succès !", {
+        kind: "success",
+        msg: "L'idée a été marquée comme validée et envoyée au calendrier.",
+      });
+    } catch (err: any) {
+      // Annulation du statut (rollback) en cas d'erreur
+      setIdeas((prev) =>
+        prev.map((item) => (item.Id === idea.Id ? { ...item, Status: prevStatus } : item))
+      );
+      if (selectedIdea && selectedIdea.Id === idea.Id) {
+        setSelectedIdea((prev) => (prev ? { ...prev, Status: prevStatus } : null));
+      }
+      toast(err?.message || "Erreur lors de la validation", { kind: "error" });
+    } finally {
+      setValidatingId(null);
+    }
+  };
+
   // ─── Gestion de l'ouverture du formulaire (Create / Edit) ─────────────────
   const openCreateModal = () => {
     setEditingIdea(null);
@@ -325,7 +551,7 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
       "Post type": idea["Post type"] || "Publication",
       "Strategic objectives": idea["Strategic objectives"] || STRATEGIC_OBJECTIVES[0],
       "Content themes": idea["Content themes"] || CONTENT_THEMES[0],
-      Status: idea.Status || "Valide",
+      Status: idea.Status || "",
     });
     setIsFormOpen(true);
   };
@@ -378,6 +604,9 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
       if (editingIdea) {
         await api.updateCreativeIdea(editingIdea.Id, payload);
         toast("Idée créative mise à jour avec succès !", { kind: "success" });
+        setIdeas((prev) =>
+          prev.map((item) => (item.Id === editingIdea.Id ? { ...item, ...payload } : item))
+        );
       } else {
         await api.createCreativeIdea(payload);
         toast("Nouvelle idée créative créée avec succès !", { kind: "success" });
@@ -412,7 +641,25 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24, maxWidth: 1400, margin: "0 auto", width: "100%" }}>
-      {/* ─── Header de la page ──────────────────────────────────────────────── */}
+      {/* ─── Sélecteur d'onglets principal : Réseaux Sociaux vs Blog ──────────── */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, borderBottom: "1px solid var(--bd)", paddingBottom: 14 }}>
+        <Tabs
+          tabs={["Réseaux Sociaux", "Blog"]}
+          value={mainTab}
+          onChange={(t) => setMainTab(t as "Réseaux Sociaux" | "Blog")}
+        />
+        <div style={{ fontSize: 12, color: "var(--tx-dim)", display: "flex", alignItems: "center", gap: 6 }}>
+          <span>Table active :</span>
+          <span style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: mainTab === "Blog" ? "#38BDF8" : "#F59E0B" }}>
+            {mainTab === "Réseaux Sociaux" ? "SmartDB (Social Ideas)" : "ms55cxivzya2wkg (Blog Ideas)"}
+          </span>
+        </div>
+      </div>
+
+      {mainTab === "Blog" ? (
+        <BlogIdeasView onAskAgent={onAskAgent} />
+      ) : (
+        <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -436,6 +683,19 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
             disabled={loading || refreshing}
           >
             Actualiser
+          </MSButton>
+          <MSButton
+            variant="secondary"
+            icon={generatingIdeas ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
+            onClick={handleGenerateIdeas}
+            disabled={generatingIdeas}
+            style={{
+              background: "linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(217, 119, 6, 0.2))",
+              borderColor: "#F59E0B",
+              color: "#F59E0B",
+            }}
+          >
+            {generatingIdeas ? "Génération..." : "Générer des Idées"}
           </MSButton>
           <MSButton
             variant="primary"
@@ -622,6 +882,27 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
               </select>
             </>
           )}
+
+          <div style={{ width: 1, height: 16, background: "var(--bd)", margin: "0 4px" }} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--tx-dim)" }}>Statut :</span>
+          <select
+            value={selectedStatus}
+            onChange={(e) => setSelectedStatus(e.target.value)}
+            style={{
+              fontSize: 12,
+              padding: "3px 8px",
+              borderRadius: 6,
+              border: "1px solid var(--bd)",
+              background: "var(--surf-1)",
+              color: "var(--tx)",
+              cursor: "pointer",
+            }}
+          >
+            <option value="all">Tous les statuts ({ideas.length})</option>
+            <option value="valide">Valides ({ideas.filter((i) => (i.Status || "").toLowerCase() === "valide").length})</option>
+            <option value="invalide">Invalides ({ideas.filter((i) => (i.Status || "").toLowerCase() === "invalide").length})</option>
+            <option value="pending">À valider ({ideas.filter((i) => (i.Status || "").toLowerCase() !== "valide" && (i.Status || "").toLowerCase() !== "invalide").length})</option>
+          </select>
         </div>
       </Card>
 
@@ -657,7 +938,7 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
 
       {!loading && !error && filteredIdeas.length > 0 && viewMode === "grid" && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 20 }}>
-          {filteredIdeas.map((idea) => {
+          {paginatedIdeas.map((idea) => {
             const ideaText = idea["Generated idea"] || "";
             const isCopied = copiedId === idea.Id;
             const channels = idea.Channels ? idea.Channels.split(",").map((c) => c.trim()) : [];
@@ -697,9 +978,7 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
                     </div>
 
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: "rgba(34, 197, 94, 0.12)", color: "#22C55E" }}>
-                        {idea.Status || "Valide"}
-                      </span>
+                      {renderStatusBadge(idea.Status)}
                     </div>
                   </div>
 
@@ -791,6 +1070,38 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
                       <Edit2 size={13} />
                       Modifier
                     </button>
+
+                    {((idea.Status || "").trim().toLowerCase() !== "valide") && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleValidateIdea(idea);
+                        }}
+                        disabled={validatingId === idea.Id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: "#22C55E",
+                          background: "rgba(34, 197, 94, 0.08)",
+                          border: "1px solid rgba(34, 197, 94, 0.25)",
+                          cursor: validatingId === idea.Id ? "not-allowed" : "pointer",
+                          padding: "4px 8px",
+                          borderRadius: 6,
+                          transition: "all 0.15s ease",
+                        }}
+                        title="Valider cette idée"
+                      >
+                        {validatingId === idea.Id ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <CheckCircle2 size={13} />
+                        )}
+                        Valider
+                      </button>
+                    )}
                   </div>
 
                   <button
@@ -838,7 +1149,7 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
                 </tr>
               </thead>
               <tbody>
-                {filteredIdeas.map((idea) => (
+                {paginatedIdeas.map((idea) => (
                   <tr
                     key={idea.Id}
                     onClick={() => setSelectedIdea(idea)}
@@ -861,9 +1172,7 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
                       {idea["Generated idea"]}
                     </td>
                     <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 999, background: "rgba(34, 197, 94, 0.12)", color: "#22C55E" }}>
-                        {idea.Status || "Valide"}
-                      </span>
+                      {renderStatusBadge(idea.Status)}
                     </td>
                     <td style={{ padding: "12px 16px", textAlign: "right" }}>
                       <div style={{ display: "inline-flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
@@ -881,6 +1190,30 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
                         >
                           <Edit2 size={13} />
                         </button>
+                        {((idea.Status || "").trim().toLowerCase() !== "valide") && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleValidateIdea(idea);
+                            }}
+                            disabled={validatingId === idea.Id}
+                            title="Valider cette idée"
+                            style={{
+                              padding: 6,
+                              borderRadius: 6,
+                              border: "1px solid rgba(34, 197, 94, 0.3)",
+                              background: "rgba(34, 197, 94, 0.08)",
+                              color: "#22C55E",
+                              cursor: validatingId === idea.Id ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            {validatingId === idea.Id ? (
+                              <Loader2 size={13} className="animate-spin" />
+                            ) : (
+                              <CheckCircle2 size={13} />
+                            )}
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -908,6 +1241,175 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
         </Card>
       )}
 
+      {/* ─── Barre de Pagination ────────────────────────────────────────────── */}
+      {!loading && !error && filteredIdeas.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 14,
+            padding: "12px 18px",
+            background: "var(--surf-card)",
+            border: "1px solid var(--bd)",
+            borderRadius: 12,
+          }}
+        >
+          <div style={{ fontSize: 13, color: "var(--tx-dim)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span>
+              Affichage de <strong style={{ color: "var(--tx)" }}>{(currentPage - 1) * pageSize + 1}</strong> à{" "}
+              <strong style={{ color: "var(--tx)" }}>{Math.min(currentPage * pageSize, filteredIdeas.length)}</strong> sur{" "}
+              <strong style={{ color: "var(--tx)" }}>{filteredIdeas.length}</strong> idées
+            </span>
+            <div style={{ width: 1, height: 16, background: "var(--bd)", margin: "0 4px" }} />
+            <span>Par page :</span>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              style={{
+                fontSize: 12,
+                padding: "3px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--bd)",
+                background: "var(--surf-1)",
+                color: "var(--tx)",
+                cursor: "pointer",
+              }}
+            >
+              <option value={9}>9</option>
+              <option value={12}>12</option>
+              <option value={24}>24</option>
+              <option value={48}>48</option>
+            </select>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage === 1}
+              title="Première page"
+              style={{
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--bd)",
+                background: "var(--surf-1)",
+                color: currentPage === 1 ? "var(--tx-dim)" : "var(--tx)",
+                cursor: currentPage === 1 ? "not-allowed" : "pointer",
+                opacity: currentPage === 1 ? 0.35 : 1,
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <ChevronsLeft size={14} />
+            </button>
+            <button
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              title="Page précédente"
+              style={{
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--bd)",
+                background: "var(--surf-1)",
+                color: currentPage === 1 ? "var(--tx-dim)" : "var(--tx)",
+                cursor: currentPage === 1 ? "not-allowed" : "pointer",
+                opacity: currentPage === 1 ? 0.35 : 1,
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <ChevronLeft size={14} />
+            </button>
+
+            {/* Numéros de page */}
+            {Array.from({ length: totalPages }, (_, i) => i + 1)
+              .filter((p) => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 1)
+              .reduce<(number | string)[]>((acc, p, idx, arr) => {
+                if (idx > 0 && p - (arr[idx - 1] as number) > 1) {
+                  acc.push("...");
+                }
+                acc.push(p);
+                return acc;
+              }, [])
+              .map((item, idx) => {
+                if (item === "...") {
+                  return (
+                    <span key={`dots-${idx}`} style={{ padding: "0 4px", color: "var(--tx-dim)", fontSize: 12 }}>
+                      ...
+                    </span>
+                  );
+                }
+                const pageNum = item as number;
+                const isActive = pageNum === currentPage;
+                return (
+                  <button
+                    key={pageNum}
+                    onClick={() => setCurrentPage(pageNum)}
+                    style={{
+                      minWidth: 30,
+                      height: 30,
+                      padding: "0 6px",
+                      borderRadius: 6,
+                      border: "1px solid " + (isActive ? "var(--accent)" : "var(--bd)"),
+                      background: isActive ? "var(--accent)" : "var(--surf-1)",
+                      color: isActive ? "#fff" : "var(--tx)",
+                      fontWeight: isActive ? 700 : 500,
+                      fontSize: 12,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {pageNum}
+                  </button>
+                );
+              })}
+
+            <button
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              title="Page suivante"
+              style={{
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--bd)",
+                background: "var(--surf-1)",
+                color: currentPage === totalPages ? "var(--tx-dim)" : "var(--tx)",
+                cursor: currentPage === totalPages ? "not-allowed" : "pointer",
+                opacity: currentPage === totalPages ? 0.35 : 1,
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <ChevronRight size={14} />
+            </button>
+            <button
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage === totalPages}
+              title="Dernière page"
+              style={{
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--bd)",
+                background: "var(--surf-1)",
+                color: currentPage === totalPages ? "var(--tx-dim)" : "var(--tx)",
+                cursor: currentPage === totalPages ? "not-allowed" : "pointer",
+                opacity: currentPage === totalPages ? 0.35 : 1,
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <ChevronsRight size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ─── SlidePanel : Vue détaillée de l'idée ─────────────────────────────── */}
       <SlidePanel
         open={Boolean(selectedIdea)}
@@ -923,9 +1425,7 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
                   <span style={{ fontSize: 12, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: "color-mix(in srgb, var(--accent) 15%, transparent)", color: "var(--accent)" }}>
                     ID #{selectedIdea.Id}
                   </span>
-                  <span style={{ fontSize: 12, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: "rgba(34, 197, 94, 0.12)", color: "#22C55E" }}>
-                    {selectedIdea.Status || "Valide"}
-                  </span>
+                  {renderStatusBadge(selectedIdea.Status)}
                 </div>
                 <h2 style={{ fontSize: 18, fontWeight: 700, color: "var(--tx)", margin: 0 }}>
                   Détail de l'idée créative
@@ -1136,11 +1636,44 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
                     : <Sparkles size={16} />
                 }
                 style={{ flex: 1 }}
-                disabled={regenerating}
+                disabled={regenerating || validating}
                 onClick={() => handleRegenerateIdea(selectedIdea)}
               >
                 {regenerating ? "L'IA travaille, patientez..." : "Régénérer l'Idée"}
               </MSButton>
+              {(() => {
+                const isCurrentIdeaValid = (selectedIdea.Status || "").trim().toLowerCase() === "valide";
+                const isCurrentValidating = validatingId === selectedIdea.Id;
+                return (
+                  <MSButton
+                    variant="secondary"
+                    icon={
+                      isCurrentValidating
+                        ? <Loader2 size={16} className="animate-spin" />
+                        : <CheckCircle2 size={16} />
+                    }
+                    style={{
+                      flex: 1,
+                      background: isCurrentValidating
+                        ? undefined
+                        : isCurrentIdeaValid
+                        ? "rgba(34, 197, 94, 0.15)"
+                        : "linear-gradient(135deg, #22C55E, #16A34A)",
+                      color: isCurrentIdeaValid ? "#22C55E" : "#fff",
+                      border: isCurrentIdeaValid ? "1px solid rgba(34, 197, 94, 0.4)" : "none",
+                    }}
+                    disabled={regenerating || isCurrentValidating}
+                    onClick={() => handleValidateIdea(selectedIdea)}
+                    title={isCurrentIdeaValid ? "Idée déjà validée. Cliquez pour revalider/renvoyer au calendrier." : "Valider cette idée"}
+                  >
+                    {isCurrentValidating
+                      ? "Envoi en cours..."
+                      : isCurrentIdeaValid
+                      ? "Idée validée ✓"
+                      : "Valider l'idée"}
+                  </MSButton>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -1428,6 +1961,42 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
             </select>
           </div>
 
+          {/* Statut de l'idée */}
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", marginBottom: 6 }}>
+              Statut de l'idée
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[
+                { label: "À valider", value: "" },
+                { label: "Valide", value: "Valide" },
+                { label: "Invalide", value: "Invalide" },
+              ].map((st) => {
+                const isSelected = formState.Status === st.value || (!formState.Status && st.value === "");
+                return (
+                  <button
+                    key={st.label}
+                    type="button"
+                    onClick={() => setFormState({ ...formState, Status: st.value })}
+                    style={{
+                      flex: 1,
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: "1px solid " + (isSelected ? (st.value === "Valide" ? "#22C55E" : st.value === "Invalide" ? "#EF4444" : "var(--accent)") : "var(--bd)"),
+                      background: isSelected ? (st.value === "Valide" ? "rgba(34, 197, 94, 0.15)" : st.value === "Invalide" ? "rgba(239, 68, 68, 0.15)" : "color-mix(in srgb, var(--accent) 15%, transparent)") : "var(--surf-1)",
+                      color: isSelected ? (st.value === "Valide" ? "#22C55E" : st.value === "Invalide" ? "#EF4444" : "var(--accent)") : "var(--tx)",
+                      fontSize: 12.5,
+                      fontWeight: isSelected ? 600 : 500,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {st.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* 7. Idée générée (Textarea principal) */}
           <div>
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--tx-dim)", marginBottom: 6 }}>
@@ -1550,6 +2119,8 @@ export function CreativeIdeasPage({ onAskAgent, onNavigate }: CreativeIdeasPageP
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

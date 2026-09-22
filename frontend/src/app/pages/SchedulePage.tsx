@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Plus, X, RefreshCw, Trash2, Send, Clock,
   Calendar as CalendarIcon, Image as ImageIcon, Film, Link2, FileText, Loader2, Lock,
   LayoutGrid, TrendingUp, Facebook, Instagram, Linkedin, Twitter, Smartphone, Sparkles,
+  Upload, Wand2, Maximize2,
 } from "lucide-react";
 import { api, ApiError, type ScheduledPost, type ScheduledPostType, type PageBestTimes } from "../lib/api";
 import { qk } from "../lib/queryKeys";
@@ -13,6 +14,8 @@ import { useScheduledPosts, errStatus, errMessage } from "../hooks/useMetaData";
 import { useTybotPosts, useCreateTybotPost, useDeleteTybotPost, useUpdateTybotPost, useTybotUploadMedia, type TybotPost } from "../hooks/useTybotPosts";
 import { useAccount } from "../providers/AccountProvider";
 import { useToast } from "../providers/ToastProvider";
+import { BlogCalendarView } from "../components/calendar/BlogCalendarView";
+import { useImageLightbox } from "../components/shared/ImageLightboxModal";
 
 
 const TYPE_COLOR: Record<ScheduledPostType, string> = {
@@ -229,6 +232,7 @@ function DayView({ cursor, posts, today, onCellClick, onPostClick }: {
 
 // ─── Vue Bibliothèque (dossier de tous les posts) ───────────────
 function LibraryView({ posts, onPostClick }: { posts: SchedPost[]; onPostClick: (p: SchedPost) => void }) {
+  const { openLightbox } = useImageLightbox();
   // Tous les posts, les plus récents/à venir d'abord (planifiés avant publiés).
   const sorted = [...posts].sort((a, b) => +b.when - +a.when);
   if (sorted.length === 0) {
@@ -253,6 +257,34 @@ function LibraryView({ posts, onPostClick }: { posts: SchedPost[]; onPostClick: 
               {p.full_picture
                 ? <img src={p.full_picture} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                 : <span style={{ color: col, display: "inline-flex", opacity: 0.6 }}><TypeIcon type={p.type} size={30} /></span>}
+              {p.full_picture && (
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openLightbox(p.full_picture!, p.message || TYPE_LABEL[p.type]);
+                  }}
+                  title="Voir l'image en grand format"
+                  style={{
+                    position: "absolute",
+                    bottom: 6,
+                    right: 6,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 24,
+                    height: 24,
+                    borderRadius: 6,
+                    background: "rgba(10, 14, 28, 0.8)",
+                    backdropFilter: "blur(4px)",
+                    border: "1px solid rgba(255, 255, 255, 0.2)",
+                    color: "#fff",
+                    cursor: "zoom-in",
+                    zIndex: 2,
+                  }}
+                >
+                  <Maximize2 size={12} />
+                </span>
+              )}
               <span style={{ position: "absolute", top: 8, left: 8, display: "inline-flex", alignItems: "center", gap: 4, background: col + "E6", color: "#fff", fontSize: 10, fontWeight: 600, borderRadius: 6, padding: "2px 7px" }}><TypeIcon type={p.type} size={10} /> {TYPE_LABEL[p.type]}</span>
               <span style={{ position: "absolute", top: 8, right: 8, display: "inline-flex", alignItems: "center", gap: 4, background: statusCol + "E6", color: "#fff", fontSize: 9.5, fontWeight: 600, borderRadius: 999, padding: "2px 7px" }}>{p.status === "published" ? "Publié" : "Planifié"}</span>
             </div>
@@ -610,12 +642,186 @@ function ComposeModal({ open, initialDate, accountId, onClose, onDone }: {
 }
 
 // ─── Panneau de détail ──────────────────────────────────────────
-function PostDetail({ post, accountId, onClose, onChanged }: {
+function PostDetail({ post, accountId, onClose, onChanged, onUpdatePost }: {
   post: SchedPost | null; accountId: string | null; onClose: () => void; onChanged: () => void;
+  onUpdatePost?: (newImageUrl: string) => void;
 }) {
   const toast = useToast();
+  const qc = useQueryClient();
+  const { openLightbox } = useImageLightbox();
   const deleteTybotM = useDeleteTybotPost();
-  
+  const uploadMediaM = useTybotUploadMedia();
+  const updateTybotM = useUpdateTybotPost();
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [displayImg, setDisplayImg] = useState(post?.full_picture || "");
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  useEffect(() => {
+    setDisplayImg(post?.full_picture || "");
+  }, [post?.full_picture]);
+
+  // Upload d'image vers Tybot domain storage
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast("Format non supporté", { kind: "error", msg: "Veuillez choisir un fichier image (PNG, JPG, WebP...)." });
+      return;
+    }
+
+    try {
+      const uploadRes = await uploadMediaM.mutateAsync(file);
+      if (!uploadRes?.url) {
+        throw new Error("L'URL de l'image n'a pas été retournée par le serveur.");
+      }
+
+      setDisplayImg(uploadRes.url);
+
+      const rawId = post?.tybotData?.Id || (post?.id?.startsWith("tybot-") ? Number(post.id.replace("tybot-", "")) : null);
+      if (rawId) {
+        await updateTybotM.mutateAsync({
+          Id: rawId,
+          "Creative (Attachment)": [{ title: file.name, url: uploadRes.url }],
+        });
+      }
+
+      onUpdatePost?.(uploadRes.url);
+      toast("Image téléversée", { kind: "success", msg: "L'image a été mise à jour avec succès." });
+      qc.invalidateQueries({ queryKey: ["tybot-posts"] });
+      qc.invalidateQueries({ queryKey: qk.scheduledPosts(accountId) });
+    } catch (err: any) {
+      toast("Échec du téléversement", { kind: "error", msg: err?.message || "Impossible de téléverser l'image." });
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  // Génération d'image via webhook https://webhook.tybotflow.com/webhook/crea_notif
+  // Reste active tant que la nouvelle image n'est pas reçue / enregistrée
+  const handleGenerateImage = async () => {
+    if (isGenerating || uploadMediaM.isPending) return;
+
+    const prevImageUrl = displayImg || post?.tybotData?.["Creative (Attachment)"]?.[0]?.url || "";
+    const prevUpdatedAt = post?.tybotData?.UpdatedAt || "";
+    const rawId = post?.tybotData?.Id || (post?.id?.startsWith("tybot-") ? Number(post.id.replace("tybot-", "")) : null);
+
+    try {
+      setIsGenerating(true);
+      const payload = {
+        ...(post?.tybotData || {}),
+        id: post?.id,
+        type: post?.type,
+        message: post?.message,
+        scheduled_time: post?.scheduled_time,
+        platform: post?.platform,
+        full_picture: displayImg || post?.full_picture,
+        when: post?.when instanceof Date ? post.when.toISOString() : post?.when,
+      };
+
+      // 1. Déclenchement du webhook
+      const res = await fetch("https://webhook.tybotflow.com/webhook/crea_notif", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(errText || `Erreur serveur HTTP ${res.status}`);
+      }
+
+      const resText = await res.text().catch(() => "");
+      let resData: any = null;
+      try { resData = JSON.parse(resText); } catch { resData = resText; }
+
+      // 2. Si le webhook renvoie directement l'image dans sa réponse
+      const directImgUrl =
+        resData?.url ||
+        resData?.imageUrl ||
+        resData?.image_url ||
+        resData?.fileUrl ||
+        (Array.isArray(resData) && (resData[0]?.url || resData[0]?.imageUrl || resData[0]?.fileUrl)) ||
+        resData?.["Creative (Attachment)"]?.[0]?.url ||
+        (typeof resData === "string" && resData.startsWith("http") ? resData : null);
+
+      if (directImgUrl && directImgUrl !== prevImageUrl) {
+        setDisplayImg(directImgUrl);
+        if (rawId) {
+          await updateTybotM.mutateAsync({
+            Id: rawId,
+            "Creative (Attachment)": [{ title: "Generated Image", url: directImgUrl }],
+          });
+        }
+        onUpdatePost?.(directImgUrl);
+        toast("Image générée avec succès !", { kind: "success", msg: "La nouvelle image a été générée." });
+        qc.invalidateQueries({ queryKey: ["tybot-posts"] });
+        qc.invalidateQueries({ queryKey: qk.scheduledPosts(accountId) });
+        return;
+      }
+
+      // 3. Sinon (le workflow n8n s'exécute et met à jour la table Tybot), on attend et sonde la table
+      // jusqu'à ce que la nouvelle image soit enregistrée dans le post
+      if (rawId) {
+        const pollInterval = 2500;
+        const maxAttempts = 36; // 90 secondes max
+        let newImageFound = false;
+
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          await new Promise((r) => setTimeout(r, pollInterval));
+          try {
+            const checkRes = await fetch("https://api.tybotflow.com/api/v1/smart-db/tables/mdozr119ylgl8tk/records?limit=50&offset=0", {
+              headers: { Authorization: "twx_4csaOnT9aItwn08I_107" },
+            });
+            if (checkRes.ok) {
+              const listData = await checkRes.json();
+              const updated = (listData.list || []).find((r: any) => r.Id === rawId);
+              const attUrl = updated?.["Creative (Attachment)"]?.[0]?.url;
+              const hasNewAtt = attUrl && (attUrl !== prevImageUrl || (updated.UpdatedAt && updated.UpdatedAt !== prevUpdatedAt));
+
+              if (hasNewAtt) {
+                setDisplayImg(attUrl);
+                onUpdatePost?.(attUrl);
+                newImageFound = true;
+                break;
+              }
+            }
+          } catch {
+            // Continuer de sonder
+          }
+        }
+
+        if (newImageFound) {
+          toast("Image générée avec succès !", {
+            kind: "success",
+            msg: "La nouvelle image a été générée et enregistrée dans le post.",
+          });
+        } else {
+          toast("Génération lancée", {
+            kind: "info",
+            msg: "La génération prend plus de temps. L'image apparaîtra dès la fin du traitement.",
+          });
+        }
+        qc.invalidateQueries({ queryKey: ["tybot-posts"] });
+        qc.invalidateQueries({ queryKey: qk.scheduledPosts(accountId) });
+      } else {
+        toast("Génération terminée", {
+          kind: "success",
+          msg: "La demande de génération a été traitée.",
+        });
+      }
+    } catch (e: any) {
+      toast("Échec de la génération", {
+        kind: "error",
+        msg: e instanceof Error ? e.message : "Erreur lors de la génération de l'image",
+      });
+    } finally {
+      // Ne se désactive QUE quand la nouvelle image est récupérée ou le délai atteint
+      setIsGenerating(false);
+    }
+  };
+
   const publishTybotM = useMutation({
     mutationFn: async () => {
       const res = await fetch("https://webhook.tybotflow.com/webhook/auto-post", {
@@ -638,7 +844,11 @@ function PostDetail({ post, accountId, onClose, onChanged }: {
       });
       if (!res.ok) throw new Error("Erreur lors de la régénération");
     },
-    onSuccess: () => { toast("Description régénérée", { kind: "success", msg: "La nouvelle description a été générée." }); onChanged(); },
+    onSuccess: () => {
+      toast("Description régénérée", { kind: "success", msg: "La nouvelle description a été générée." });
+      qc.invalidateQueries({ queryKey: ["tybot-posts"] });
+      qc.invalidateQueries({ queryKey: qk.scheduledPosts(accountId) });
+    },
     onError: (e) => toast("Échec de la régénération", { kind: "error", msg: e instanceof Error ? e.message : undefined }),
   });
 
@@ -650,7 +860,6 @@ function PostDetail({ post, accountId, onClose, onChanged }: {
   const deleteM = useMutation({
     mutationFn: () => {
       if (post?.isTybot) {
-        // ID format was `tybot-123`, we need the raw ID to delete
         return deleteTybotM.mutateAsync(Number(post.id.replace("tybot-", "")));
       }
       return api.deleteScheduledPost(post!.id, accountId);
@@ -658,11 +867,14 @@ function PostDetail({ post, accountId, onClose, onChanged }: {
     onSuccess: () => { toast("Post supprimé", { kind: "success" }); onChanged(); },
     onError: (e) => toast("Échec de la suppression", { kind: "error", msg: e instanceof ApiError ? e.message : undefined }),
   });
+
   if (!post) return null;
   const col = TYPE_COLOR[post.type];
   const statusCol = post.status === "published" ? "#22C55E" : "#F59E0B";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Header */}
       <div style={{ padding: "18px 22px", borderBottom: "1px solid var(--bd)", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -676,15 +888,295 @@ function PostDetail({ post, accountId, onClose, onChanged }: {
         </div>
         <button onClick={onClose} className="ms-icon-btn" style={{ width: 32, height: 32, borderRadius: 8, background: "transparent", border: "1px solid var(--bd)", color: "var(--tx-3)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><X size={16} /></button>
       </div>
-      <div style={{ flex: 1, overflow: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 16 }}>
-        {post.full_picture
-          ? <img src={post.full_picture} alt="" style={{ width: "100%", maxHeight: 260, objectFit: "cover", borderRadius: 14, border: "1px solid var(--bd)" }} />
-          : <div style={{ aspectRatio: "4/3", maxHeight: 240, borderRadius: 14, background: "repeating-linear-gradient(45deg, var(--surf-inset), var(--surf-inset) 8px, var(--surf-2) 8px, var(--surf-2) 16px)", border: "1px solid var(--bd)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontFamily: "JetBrains Mono", fontSize: 11, letterSpacing: ".08em" }}>{TYPE_LABEL[post.type].toUpperCase()}</div>}
-        <div style={{ fontSize: 14, color: "var(--tx-2)", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{post.message || <span style={{ color: "var(--tx-dim)" }}>(sans texte)</span>}</div>
+
+      {/* Content */}
+      <div style={{ flex: 1, overflow: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
+        {/* Section Image & Actions Média */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div
+            style={{
+              position: "relative",
+              borderRadius: 14,
+              overflow: "hidden",
+              border: "1px solid var(--bd)",
+              background: "var(--surf-inset)",
+              minHeight: 180,
+            }}
+          >
+            {displayImg ? (
+              <div
+                onClick={() => openLightbox(displayImg, post?.message || "Visuel du post")}
+                style={{ position: "relative", cursor: "zoom-in" }}
+                title="Cliquer pour afficher l'image complète"
+              >
+                <img
+                  src={displayImg}
+                  alt="Visuel du post"
+                  style={{ width: "100%", maxHeight: 280, objectFit: "cover", display: "block" }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: 10,
+                    right: 10,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "6px 12px",
+                    borderRadius: 20,
+                    background: "rgba(10, 14, 28, 0.85)",
+                    backdropFilter: "blur(6px)",
+                    border: "1px solid rgba(255, 255, 255, 0.25)",
+                    color: "#FFFFFF",
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    boxShadow: "0 6px 16px rgba(0,0,0,0.4)",
+                  }}
+                >
+                  <Maximize2 size={13} style={{ color: "var(--accent)" }} />
+                  Voir en grand
+                </div>
+              </div>
+            ) : (
+              <div
+                style={{
+                  aspectRatio: "16/9",
+                  maxHeight: 240,
+                  background:
+                    "repeating-linear-gradient(45deg, var(--surf-inset), var(--surf-inset) 8px, var(--surf-2) 8px, var(--surf-2) 16px)",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  color: "var(--tx-dim)",
+                  fontFamily: "JetBrains Mono",
+                  fontSize: 11,
+                  letterSpacing: ".08em",
+                }}
+              >
+                <ImageIcon size={32} style={{ opacity: 0.4 }} />
+                <span>{TYPE_LABEL[post.type]?.toUpperCase() || "PHOTO"}</span>
+              </div>
+            )}
+
+            {/* Spinner Overlay pendant Upload */}
+            {uploadMediaM.isPending && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  background: "rgba(6, 13, 31, 0.78)",
+                  backdropFilter: "blur(4px)",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 10,
+                  color: "#fff",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  zIndex: 10,
+                }}
+              >
+                <Loader2 size={26} className="animate-spin" style={{ color: "var(--accent)" }} />
+                <span>Téléversement de l'image en cours…</span>
+              </div>
+            )}
+
+            {/* Spinner Overlay pendant Génération */}
+            {isGenerating && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  background: "radial-gradient(ellipse at center, rgba(30, 20, 50, 0.95), rgba(10, 12, 24, 0.98))",
+                  backdropFilter: "blur(6px)",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 24,
+                  textAlign: "center",
+                  gap: 14,
+                  color: "#fff",
+                  zIndex: 20,
+                }}
+              >
+                <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div
+                    className="animate-spin"
+                    style={{
+                      width: 54,
+                      height: 54,
+                      borderRadius: "50%",
+                      border: "3px solid rgba(192, 132, 252, 0.2)",
+                      borderTopColor: "#C084FC",
+                    }}
+                  />
+                  <Sparkles
+                    size={24}
+                    style={{
+                      position: "absolute",
+                      color: "#D8B4FE",
+                    }}
+                  />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#F3E8FF", letterSpacing: "-0.01em" }}>
+                    Image en cours de génération…
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "#C084FC", maxWidth: 280, lineHeight: 1.45 }}>
+                    Traitement par l'IA en cours. Veuillez patienter jusqu'à la réception de la réponse du serveur.
+                  </div>
+                </div>
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "4px 12px",
+                    borderRadius: 999,
+                    background: "rgba(168, 85, 247, 0.18)",
+                    border: "1px solid rgba(168, 85, 247, 0.45)",
+                    fontSize: 11,
+                    color: "#E9D5FF",
+                    fontWeight: 600,
+                  }}
+                >
+                  <Loader2 size={12} className="animate-spin" style={{ color: "#C084FC" }} />
+                  <span>En attente de la réponse...</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Boutons d'action pour l'image */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadMediaM.isPending || isGenerating}
+              className="ms-btn"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                padding: "10px 14px",
+                borderRadius: 10,
+                background: "var(--surf-card)",
+                border: "1px solid var(--bd)",
+                color: "var(--tx)",
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: (uploadMediaM.isPending || isGenerating) ? "not-allowed" : "pointer",
+                opacity: isGenerating ? 0.6 : 1,
+                transition: "all .15s ease",
+              }}
+            >
+              {uploadMediaM.isPending ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <Upload size={15} style={{ color: "var(--accent)" }} />
+              )}
+              <span>Upload image</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleGenerateImage}
+              disabled={uploadMediaM.isPending || isGenerating}
+              className="ms-btn"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                padding: "10px 14px",
+                borderRadius: 10,
+                background: isGenerating
+                  ? "linear-gradient(135deg, rgba(99, 102, 241, 0.28), rgba(168, 85, 247, 0.35))"
+                  : "linear-gradient(135deg, rgba(99, 102, 241, 0.16), rgba(168, 85, 247, 0.2))",
+                border: isGenerating
+                  ? "1.5px solid #C084FC"
+                  : "1px solid rgba(168, 85, 247, 0.4)",
+                color: isGenerating ? "#FFFFFF" : "#D8B4FE",
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: isGenerating ? "wait" : "pointer",
+                boxShadow: isGenerating ? "0 0 16px rgba(168, 85, 247, 0.35)" : "none",
+                transition: "all .15s ease",
+              }}
+            >
+              {isGenerating ? (
+                <>
+                  <Loader2 size={15} className="animate-spin" style={{ color: "#C084FC" }} />
+                  <span>Génération en cours…</span>
+                </>
+              ) : (
+                <>
+                  <Wand2 size={15} style={{ color: "#C084FC" }} />
+                  <span>Generate image</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Bandeau d'état pendant la génération */}
+          {isGenerating && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "12px 16px",
+                borderRadius: 12,
+                background: "linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(168, 85, 247, 0.2))",
+                border: "1px solid rgba(168, 85, 247, 0.45)",
+                boxShadow: "0 4px 18px rgba(168, 85, 247, 0.15)",
+              }}
+            >
+              <Loader2 size={18} className="animate-spin" style={{ color: "#C084FC", flexShrink: 0 }} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#F3E8FF" }}>
+                  Génération d'image en cours…
+                </span>
+                <span style={{ fontSize: 11.5, color: "#D8B4FE", lineHeight: 1.4 }}>
+                  Requête envoyée à l'IA. L'image se mettra à jour automatiquement dès l'arrivée de la réponse du serveur.
+                </span>
+              </div>
+            </div>
+          )}
+
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept="image/*"
+            onChange={handleFileUpload}
+            style={{ display: "none" }}
+          />
+        </div>
+
+        {/* Message / Caption */}
+        <div style={{ fontSize: 14, color: "var(--tx-2)", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+          {post.message || <span style={{ color: "var(--tx-dim)" }}>(sans texte)</span>}
+        </div>
       </div>
-      <div style={{ padding: 18, borderTop: "1px solid var(--bd)", display: "flex", flexWrap: "wrap", gap: 8 }}>
+
+      {/* Action Footer */}
+      <div style={{ padding: 18, borderTop: "1px solid var(--bd)", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
         <MSButton variant="outline" danger onClick={() => deleteM.mutate()} disabled={deleteM.isPending} icon={<Trash2 size={14} />} style={{ marginRight: "auto" }}>Supprimer</MSButton>
-        {post.isTybot && <MSButton variant="outline" onClick={() => regenDescM.mutate()} disabled={regenDescM.isPending} icon={regenDescM.isPending ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}>Régénérer</MSButton>}
+        {post.isTybot && (
+          <MSButton
+            variant="outline"
+            onClick={() => regenDescM.mutate()}
+            disabled={regenDescM.isPending}
+            icon={regenDescM.isPending ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+          >
+            Régénérer texte
+          </MSButton>
+        )}
         {post.status === "scheduled" && !post.isTybot && <MSButton variant="primary" onClick={() => publishM.mutate()} disabled={publishM.isPending} icon={publishM.isPending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}>Publier maintenant</MSButton>}
         {post.status === "scheduled" && post.isTybot && <MSButton variant="primary" onClick={() => publishTybotM.mutate()} disabled={publishTybotM.isPending} icon={publishTybotM.isPending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}>Publier maintenant</MSButton>}
       </div>
@@ -693,7 +1185,12 @@ function PostDetail({ post, accountId, onClose, onChanged }: {
 }
 
 // ─── Page ───────────────────────────────────────────────────────
-export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void }) {
+interface SchedulePageProps {
+  onGoToSettings: () => void;
+  initialChannel?: "Réseaux Sociaux" | "Calendrier Blog";
+}
+
+export function SchedulePage({ onGoToSettings, initialChannel = "Réseaux Sociaux" }: SchedulePageProps) {
   const { selectedAccountId } = useAccount();
   const qc = useQueryClient();
   const q = useScheduledPosts();
@@ -701,6 +1198,18 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
   const today = useMemo(() => new Date(), []);
   const [cursor, setCursor] = useState<Date>(() => new Date());
   const [view, setView] = useState<"Jour" | "Semaine" | "Mois">("Mois");
+
+  // Canal : Réseaux Sociaux (Meta/Tybot) vs Calendrier Blog
+  const [scheduleChannel, setScheduleChannel] = useState<"Réseaux Sociaux" | "Calendrier Blog">(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search).get("view");
+      if (p === "schedule_blog") return "Calendrier Blog";
+      const tab = new URLSearchParams(window.location.search).get("tab");
+      if (tab?.toLowerCase() === "blog") return "Calendrier Blog";
+    }
+    return initialChannel;
+  });
+
   // Mode d'affichage : calendrier (Jour/Semaine/Mois) ou bibliothèque (galerie de
   // tous les posts, façon « dossier »).
   const [mode, setMode] = useState<"Calendrier" | "Bibliothèque">("Calendrier");
@@ -803,23 +1312,36 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
 
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: 20 }}>
-      {q.isFetching && <LoadingOverlay messages={["Mise à jour des posts planifiés…"]} />}
+      {/* ─── Sélecteur de canal : Réseaux Sociaux vs Calendrier Blog ──────── */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", borderBottom: "1px solid var(--bd)", paddingBottom: 16 }}>
+        <Tabs
+          tabs={["Réseaux Sociaux", "Calendrier Blog"]}
+          value={scheduleChannel}
+          onChange={(t) => setScheduleChannel(t as "Réseaux Sociaux" | "Calendrier Blog")}
+        />
+      </div>
 
-      {q.data.blocked_reason && (
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderRadius: 10, background: "#F59E0B12", border: "1px solid #F59E0B30", color: "#FCD9A0", fontSize: 12.5 }}>
-          <Lock size={15} style={{ flexShrink: 0, marginTop: 1, color: "#F59E0B" }} />
-          <span>La planification nécessite l'autorisation <b>pages_manage_posts</b> sur ton token Meta. Les posts existants peuvent rester invisibles tant qu'elle n'est pas accordée.</span>
-        </div>
-      )}
+      {scheduleChannel === "Calendrier Blog" ? (
+        <BlogCalendarView />
+      ) : (
+        <>
+          {q.isFetching && <LoadingOverlay messages={["Mise à jour des posts planifiés…"]} />}
 
-      <div className="ms-stagger" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 240 }}>
-            <h2 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 24, color: "var(--tx)", margin: 0, letterSpacing: "-.01em" }}>Planning de publication</h2>
-            <p style={{ fontSize: 13.5, color: "var(--tx-dim)", margin: "6px 0 0", maxWidth: 560, lineHeight: 1.5 }}>{scheduledCount === 0
-              ? "Aucun post en file. Clique une date du calendrier pour planifier ta première publication ; Meta s'en charge à l'heure dite."
-              : `${scheduledCount} post${scheduledCount > 1 ? "s" : ""} en file${todayCount > 0 ? `, dont ${todayCount} aujourd'hui` : ""}. Clique une date pour en ajouter un ; Meta publie automatiquement.`}</p>
-          </div>
+          {q.data.blocked_reason && (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderRadius: 10, background: "#F59E0B12", border: "1px solid #F59E0B30", color: "#FCD9A0", fontSize: 12.5 }}>
+              <Lock size={15} style={{ flexShrink: 0, marginTop: 1, color: "#F59E0B" }} />
+              <span>La planification nécessite l'autorisation <b>pages_manage_posts</b> sur ton token Meta. Les posts existants peuvent rester invisibles tant qu'elle n'est pas accordée.</span>
+            </div>
+          )}
+
+          <div className="ms-stagger" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <h2 style={{ fontFamily: "DM Sans", fontWeight: 700, fontSize: 24, color: "var(--tx)", margin: 0, letterSpacing: "-.01em" }}>Planning de publication</h2>
+                <p style={{ fontSize: 13.5, color: "var(--tx-dim)", margin: "6px 0 0", maxWidth: 560, lineHeight: 1.5 }}>{scheduledCount === 0
+                  ? "Aucun post en file. Clique une date du calendrier pour planifier ta première publication ; Meta s'en charge à l'heure dite."
+                  : `${scheduledCount} post${scheduledCount > 1 ? "s" : ""} en file${todayCount > 0 ? `, dont ${todayCount} aujourd'hui` : ""}. Clique une date pour en ajouter un ; Meta publie automatiquement.`}</p>
+              </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <Tabs tabs={["Calendrier", "Bibliothèque"]} value={mode} onChange={(t) => setMode(t as "Calendrier" | "Bibliothèque")} />
             <MSButton variant="outline" icon={<RefreshCw size={14} />} onClick={refresh}>Rafraîchir</MSButton>
@@ -859,8 +1381,19 @@ export function SchedulePage({ onGoToSettings }: { onGoToSettings: () => void })
         onClose={() => setCompose({ open: false, date: null })}
         onDone={() => { setCompose({ open: false, date: null }); refresh(); }} />
       <SlidePanel open={!!selected} onClose={() => setSelected(null)}>
-        <PostDetail post={selected} accountId={selectedAccountId} onClose={() => setSelected(null)} onChanged={() => { setSelected(null); refresh(); }} />
+        <PostDetail
+          post={selected}
+          accountId={selectedAccountId}
+          onClose={() => setSelected(null)}
+          onChanged={() => { setSelected(null); refresh(); }}
+          onUpdatePost={(newImg) => {
+            setSelected((prev) => (prev ? { ...prev, full_picture: newImg } : null));
+            refresh();
+          }}
+        />
       </SlidePanel>
+        </>
+      )}
     </div>
   );
 }

@@ -1,15 +1,17 @@
 import { useState, type ReactNode } from "react";
-import { AlertTriangle, ExternalLink, Eye, Heart, Instagram as IgIcon, MessageCircle, RefreshCw } from "lucide-react";
+import { AlertTriangle, ExternalLink, Eye, Heart, Instagram as IgIcon, MessageCircle, RefreshCw, Maximize2 } from "lucide-react";
 import type { IgPost, IgProfile } from "../lib/api";
 import { fmtNum } from "../lib/format";
 import { Card, SectionTitle, LoadingOverlay, MSButton, Placeholder } from "../components/ms/primitives";
 import { ConnectPrompt, ErrorState } from "../components/shared/states";
 import { useInstagram, errStatus, errMessage } from "../hooks/useMetaData";
+import { useImageLightbox } from "../components/shared/ImageLightboxModal";
 
 const fmtDate = (s?: string | null) =>
   s ? new Date(s).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "2-digit" }) : "—";
 
 function ProfileHeader({ profile }: { profile?: IgProfile | null }) {
+  const { openLightbox } = useImageLightbox();
   if (!profile) return null;
   const stats: Array<[string, string]> = [
     ["Followers", fmtNum(profile.followers_count)],
@@ -20,7 +22,15 @@ function ProfileHeader({ profile }: { profile?: IgProfile | null }) {
     <Card pad={20}>
       <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         {profile.profile_picture_url
-          ? <img src={profile.profile_picture_url} alt="" style={{ width: 64, height: 64, borderRadius: 999, objectFit: "cover", flexShrink: 0, border: "1px solid var(--bd)" }} />
+          ? (
+            <img
+              src={profile.profile_picture_url}
+              alt=""
+              onClick={() => openLightbox(profile.profile_picture_url!, `@${profile.username}`)}
+              style={{ width: 64, height: 64, borderRadius: 999, objectFit: "cover", flexShrink: 0, border: "1px solid var(--bd)", cursor: "zoom-in" }}
+              title="Agrandir la photo de profil"
+            />
+          )
           : <div style={{ width: 64, height: 64, borderRadius: 999, background: "color-mix(in srgb, var(--accent) 14%, transparent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><IgIcon size={26} /></div>}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -52,12 +62,43 @@ function PostMetric({ icon, value, title }: { icon: ReactNode; value: string; ti
 }
 
 function PostCard({ post }: { post: IgPost }) {
+  const { openLightbox } = useImageLightbox();
   const img = post.media_type === "VIDEO" ? (post.thumbnail_url || post.media_url) : (post.media_url || post.thumbnail_url);
   const kind = (post.media_product_type || post.media_type || "").replace("CAROUSEL_ALBUM", "ALBUM");
   return (
     <div style={{ background: "var(--surf-card)", border: "1px solid var(--bd)", borderRadius: 12, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-      <div style={{ position: "relative", aspectRatio: "1 / 1", background: "var(--surf-2)" }}>
-        {img ? <img src={img} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}><Placeholder w={48} height={48} label="IMG" /></div>}
+      <div
+        style={{ position: "relative", aspectRatio: "1 / 1", background: "var(--surf-2)", cursor: img ? "zoom-in" : "default" }}
+        onClick={() => { if (img) openLightbox(img, post.caption || "Publication Instagram"); }}
+        title={img ? "Cliquer pour afficher l'image complète" : undefined}
+      >
+        {img ? (
+          <>
+            <img src={img} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <span
+              style={{
+                position: "absolute",
+                bottom: 8,
+                right: 8,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 26,
+                height: 26,
+                borderRadius: 6,
+                background: "rgba(10, 14, 28, 0.8)",
+                backdropFilter: "blur(4px)",
+                border: "1px solid rgba(255, 255, 255, 0.2)",
+                color: "#fff",
+                zIndex: 2,
+              }}
+            >
+              <Maximize2 size={13} />
+            </span>
+          </>
+        ) : (
+          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}><Placeholder w={48} height={48} label="IMG" /></div>
+        )}
         {kind && <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10, fontWeight: 600, color: "#fff", background: "rgba(0,0,0,.55)", borderRadius: 5, padding: "2px 7px", textTransform: "uppercase", letterSpacing: ".04em" }}>{kind}</span>}
       </div>
       <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Lock, ChevronDown, ExternalLink, Image as ImageIcon, Link2, X, ImagePlus, Film, Send, Loader2, PenSquare, PlayCircle } from "lucide-react";
+import { Lock, ChevronDown, ExternalLink, Image as ImageIcon, Link2, X, ImagePlus, Film, Send, Loader2, PenSquare, PlayCircle, Maximize2 } from "lucide-react";
 import { api, ApiError, type PagePost } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { fmtNum, fmtDateTimeFull } from "../lib/format";
@@ -9,6 +9,7 @@ import { ConnectPrompt } from "../components/shared/states";
 import { usePageData } from "../hooks/useMetaData";
 import { useAccount } from "../providers/AccountProvider";
 import { useToast } from "../providers/ToastProvider";
+import { useImageLightbox } from "../components/shared/ImageLightboxModal";
 
 type PostSortKey = "date" | "engagement" | "reactions" | "comments" | "shares";
 
@@ -261,6 +262,7 @@ export function PageAnalysisPage({ onGoToSettings }: { onGoToSettings: () => voi
 // source (mp4) est fournie par Meta, sinon photo pleine résolution, avec le texte,
 // l'engagement et un lien vers Facebook. Clic sur l'arrière-plan ou Échap = fermer.
 function PostViewer({ post, engagementBlocked, onClose }: { post: PagePost; engagementBlocked: boolean; onClose: () => void }) {
+  const { openLightbox } = useImageLightbox();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -281,7 +283,35 @@ function PostViewer({ post, engagementBlocked, onClose }: { post: PagePost; enga
           {videoSrc ? (
             <video src={videoSrc} controls autoPlay playsInline style={{ width: "100%", maxHeight: "56vh", display: "block", background: "#000" }} />
           ) : imageSrc ? (
-            <img src={imageSrc} alt="" style={{ width: "100%", maxHeight: "56vh", objectFit: "contain", display: "block" }} />
+            <div
+              style={{ position: "relative", width: "100%", maxHeight: "56vh", cursor: "zoom-in", display: "flex", alignItems: "center", justifyContent: "center" }}
+              onClick={() => openLightbox(imageSrc, post.message || "Publication Facebook")}
+              title="Cliquer pour afficher l'image complète"
+            >
+              <img src={imageSrc} alt="" style={{ width: "100%", maxHeight: "56vh", objectFit: "contain", display: "block" }} />
+              <span
+                style={{
+                  position: "absolute",
+                  bottom: 10,
+                  right: 10,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "5px 11px",
+                  borderRadius: 20,
+                  background: "rgba(10, 14, 28, 0.85)",
+                  backdropFilter: "blur(6px)",
+                  border: "1px solid rgba(255, 255, 255, 0.25)",
+                  color: "#FFFFFF",
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  boxShadow: "0 6px 16px rgba(0,0,0,0.4)",
+                }}
+              >
+                <Maximize2 size={13} style={{ color: "var(--accent)" }} />
+                Voir en grand
+              </span>
+            </div>
           ) : (
             <div style={{ padding: 40, color: "var(--tx-dim)", fontSize: 13, textAlign: "center" }}>
               {isVideo ? "Aperçu vidéo indisponible — ouvre le post sur Facebook pour le lire." : "Ce post ne contient pas de média."}
