@@ -123,9 +123,6 @@ def get_account_dashboard(
         "age": lambda: db.rpc_fb_breakdown(account_id, start, end, "age"),
         "gender": lambda: db.rpc_fb_breakdown(account_id, start, end, "gender"),
         "country": lambda: db.rpc_fb_breakdown(account_id, start, end, "country"),
-        # Indépendant de la fenêtre choisie : dernier jour avec dépense réelle.
-        # Permet à l'UI de distinguer « compte à l'arrêt » de « données figées ».
-        "last_active": lambda: db.last_active_insight_date(account_id),
     }
     if prev_start:
         tasks["prev"] = prev_fn
@@ -227,7 +224,6 @@ def get_account_dashboard(
         "cost_per_lead": cost_per_lead,
         "conv_rate": conv_rate,
         "conversion_profile": conversion_profile,
-        "last_activity_date": res.get("last_active"),
     }
 
 

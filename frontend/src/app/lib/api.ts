@@ -320,8 +320,6 @@ export interface DashboardResponse {
   gender_breakdown: Array<{ name: string; value: number }>;
   geo_breakdown: Array<{ code: string; spend: number; impressions: number; clicks: number; ctr: number }>;
   top_campaigns: CampaignSummary[];
-  /** Dernier jour avec dépense réelle (ISO), indépendant de la période. */
-  last_activity_date?: string | null;
 }
 
 export type GeoDatum = DashboardResponse["geo_breakdown"][number];
