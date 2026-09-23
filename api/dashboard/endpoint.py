@@ -138,4 +138,5 @@ def get_dashboard(
         gender_breakdown=gender,
         geo_breakdown=geo,
         top_campaigns=top,
+        last_activity_date=data.get("last_activity_date"),
     )

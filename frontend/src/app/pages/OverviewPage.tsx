@@ -1,6 +1,6 @@
-import { RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import type { CampaignSummary } from "../lib/api";
-import { fmtMoney, fmtNum } from "../lib/format";
+import { describeActivity, fmtMoney, fmtNum } from "../lib/format";
 import {
   Card, KPICard, MSButton, SectionTitle, LoadingOverlay, type Kpi,
 } from "../components/ms/primitives";
@@ -88,6 +88,7 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
   const objectives = Object.entries(objMap).sort((a, b) => b[1] - a[1]).slice(0, 5)
     .map(([label, value], i) => ({ label, value, color: OBJ_COLORS[i % OBJ_COLORS.length] }));
   const objTotal = objectives.reduce((s, o) => s + o.value, 0);
+  const activity = describeActivity(data.last_activity_date);
 
   return (
     <div className="ms-stagger" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -106,6 +107,27 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
           <MSButton variant="outline" size="sm" icon={<RefreshCw size={14} />} onClick={() => { dash.refetch(); camps.refetch(); }} disabled={loading}>Rafraîchir</MSButton>
         </div>
       </div>
+      {activity && (
+        <div
+          role={activity.stale ? "status" : undefined}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, fontSize: 12.5,
+            color: activity.stale ? "#F59E0B" : "var(--tx-3)",
+            ...(activity.stale ? {
+              padding: "9px 13px", borderRadius: 10,
+              background: "color-mix(in srgb, #F59E0B 9%, transparent)",
+              border: "1px solid color-mix(in srgb, #F59E0B 28%, transparent)",
+            } : {}),
+          }}
+        >
+          {activity.stale && <AlertTriangle size={14} style={{ flexShrink: 0 }} />}
+          <span>
+            {activity.stale
+              ? <>Aucune dépense depuis le <strong>{activity.label}</strong>. Les chiffres sont à jour : vos publicités ne diffusent plus. Vérifiez la diffusion et la facturation dans le Gestionnaire de publicités Meta.</>
+              : <>Dernière activité Meta : {activity.label}</>}
+          </span>
+        </div>
+      )}
       {error && <ErrorBanner message={error} onRetry={() => dash.refetch()} />}
       <div className="ov-kpis">
         {kpis.length === 0

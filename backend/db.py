@@ -508,6 +508,25 @@ def get_fb_sync_state(ad_account_id: str) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
+def last_active_insight_date(ad_account_id: str) -> Optional[str]:
+    """Dernier jour où le compte a réellement dépensé (spend > 0), ou None.
+
+    Distinct de `insights_synced_until` (jusqu'où le sync est allé) : un compte
+    dont les pubs ne diffusent plus est à jour côté sync, mais n'a plus
+    d'activité. Sans cette date, l'UI montre des chiffres « figés » qui
+    ressemblent à un bug alors qu'ils sont exacts."""
+    res = (
+        supabase_admin.table("fb_insights_daily")
+        .select("date")
+        .eq("ad_account_id", ad_account_id)
+        .gt("spend", 0)
+        .order("date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return str(res.data[0]["date"])[:10] if res.data else None
+
+
 def set_fb_sync_state(ad_account_id: str, **fields: Any) -> None:
     payload = {
         "ad_account_id": ad_account_id,

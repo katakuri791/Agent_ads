@@ -558,6 +558,9 @@ class DashboardResponse(BaseModel):
     gender_breakdown: list[dict[str, Any]] = []
     geo_breakdown: list[dict[str, Any]] = []
     top_campaigns: list[CampaignSummary] = []
+    # Dernier jour avec dépense réelle (ISO), indépendant de la période choisie.
+    # None = aucune dépense en cache. Sert à signaler un compte à l'arrêt.
+    last_activity_date: Optional[str] = None
 
 
 class PagePost(BaseModel):

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException
@@ -13,19 +14,54 @@ from backend.schemas import SyncStatusResponse, UserPublic
 logger = logging.getLogger("metainsight")
 
 
+# Au-delà de ce délai sans mise à jour, un statut « running » est orphelin : le
+# process est mort en plein sync (reload uvicorn, redéploiement) sans pouvoir
+# écrire « success » ni « error ». Un sync incrémental dure quelques minutes.
+_STALE_RUNNING = timedelta(minutes=30)
+
+_STALE_RUNNING_MSG = (
+    "La dernière synchronisation a été interrompue avant la fin. "
+    "Relance-la avec le bouton de synchronisation."
+)
+
+
+def _is_stale_running(state: dict, now: Optional[datetime] = None) -> bool:
+    """Vrai si l'état dit « running » mais n'a plus bougé depuis trop longtemps.
+
+    Sans ça, un sync interrompu laisse « running » en base pour toujours : l'UI
+    affiche « Synchronisation… » en boucle et désactive le bouton Rafraîchir."""
+    if state.get("last_sync_status") != "running":
+        return False
+    raw = state.get("updated_at")
+    if not raw:
+        return True  # « running » sans horodatage : impossible de le croire vivant.
+    try:
+        updated = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - updated > _STALE_RUNNING
+
+
 def _sync_status(acct: dict) -> SyncStatusResponse:
     # Le cache (et fb_sync_state) est keyé par ad account ; l'API reste exprimée
     # en row id meta_accounts (ce que sélectionne l'UI) → on mappe ici.
     state = db_get_fb_sync_state(acct.get("meta_ad_account_id") or "") or {}
+    status = state.get("last_sync_status")
+    error = state.get("last_error")
+    if _is_stale_running(state):
+        # Rapporté comme un échec à relancer : le bouton redevient cliquable.
+        status, error = "error", _STALE_RUNNING_MSG
     return SyncStatusResponse(
         account_id=acct["id"],
         last_sync_at=state.get("last_sync_at"),
-        last_sync_status=state.get("last_sync_status"),
-        last_error=state.get("last_error"),
+        last_sync_status=status,
+        last_error=error,
         insights_synced_until=(
             str(state["insights_synced_until"]) if state.get("insights_synced_until") else None
         ),
-        running=state.get("last_sync_status") == "running",
+        running=status == "running",
     )
 
 
