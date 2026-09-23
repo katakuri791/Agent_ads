@@ -14,12 +14,14 @@ import { PaymentPage } from "../../pages/PaymentPage";
 import { AIAgentPage } from "../../pages/AIAgentPage";
 import { SettingsPage } from "../../pages/SettingsPage";
 import { CreativeIdeasPage } from "../../pages/CreativeIdeasPage";
+import { BrainstormingPage } from "../../pages/BrainstormingPage";
+import { StrategyPage } from "../../pages/StrategyPage";
 import { TokenAlertBanner } from "../TokenAlertBanner";
 import { ErrorBoundary } from "../shared/ErrorBoundary";
 
 /** Sections valides — sert à valider le param d'URL `view` (toute valeur inconnue
  *  retombe sur "overview"). Doit rester aligné avec les clés de `pages` ci-dessous. */
-const PAGES = ["overview", "campaigns", "page", "instagram", "audiences", "schedule", "access", "payment", "ai", "creative_ideas", "settings"] as const;
+const PAGES = ["overview", "campaigns", "creative_ideas", "creative_ideas_blog", "brainstorming", "brainstorming_blog", "strategy", "page", "instagram", "audiences", "schedule", "schedule_blog", "access", "payment", "ai", "settings"] as const;
 const validPage = (v: string | null): string => (v && (PAGES as readonly string[]).includes(v) ? v : "overview");
 
 /** Coquille de l'app authentifiée : sidebar + topbar (avec les filtres globaux)
@@ -45,14 +47,19 @@ export function AppShell({ user, onUserChange, onLogout }: { user: AuthUser; onU
   const pages: Record<string, ReactNode> = {
     overview: <OverviewPage onGoToSettings={goToSettings} />,
     campaigns: <CampaignsPage onGoToSettings={goToSettings} onAskAgent={goToAgent} />,
+    creative_ideas: <CreativeIdeasPage onNavigate={navigate} onAskAgent={goToAgent} />,
+    creative_ideas_blog: <CreativeIdeasPage initialTab="Blog" onNavigate={navigate} onAskAgent={goToAgent} />,
+    brainstorming: <BrainstormingPage onNavigate={navigate} onAskAgent={goToAgent} />,
+    brainstorming_blog: <BrainstormingPage initialTab="Blog" onNavigate={navigate} onAskAgent={goToAgent} />,
+    strategy: <StrategyPage onNavigate={navigate} onAskAgent={goToAgent} />,
     page: <PageAnalysisPage onGoToSettings={goToSettings} />,
     instagram: <InstagramPage onGoToSettings={goToSettings} />,
     audiences: <AudiencesPage onGoToSettings={goToSettings} />,
     schedule: <SchedulePage onGoToSettings={goToSettings} />,
+    schedule_blog: <SchedulePage initialChannel="Calendrier Blog" onGoToSettings={goToSettings} />,
     access: <AccessPage onGoToSettings={goToSettings} />,
     payment: <PaymentPage onGoToSettings={goToSettings} />,
     ai: <AIAgentPage onNavigate={navigate} />,
-    creative_ideas: <CreativeIdeasPage onNavigate={navigate} onAskAgent={goToAgent} />,
     settings: <SettingsPage user={user} onUserChange={onUserChange} onLogout={onLogout} />,
   };
 

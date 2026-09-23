@@ -26,6 +26,7 @@ async def get_creative_ideas(
     params: dict[str, Any] = {
         "limit": min(max(1, limit), 100),
         "offset": max(0, offset),
+        "sort": "-Id",
     }
     if search:
         # NocoDB supporte le filtrage de recherche
