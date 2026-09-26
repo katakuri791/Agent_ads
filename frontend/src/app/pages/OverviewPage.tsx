@@ -4,7 +4,7 @@ import { fmtMoney, fmtNum } from "../lib/format";
 import {
   Card, KPICard, MSButton, SectionTitle, LoadingOverlay, type Kpi,
 } from "../components/ms/primitives";
-import { LineChart, DonutChart } from "../components/ms/charts";
+import { SpendImpressionsChart, ObjectiveDonut } from "../components/ms/charts";
 import { WorldMap } from "../components/ms/worldmap";
 import { ConnectPrompt, ErrorBanner, ErrorState, OBJ_COLORS } from "../components/shared/states";
 import { useDashboard, useCampaigns, errStatus, errMessage } from "../hooks/useMetaData";
@@ -120,7 +120,7 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
             <span style={{ color: "var(--tx-3)" }}><span style={{ color: "var(--accent)" }}>● </span>Dépenses</span>
             <span style={{ color: "var(--tx-3)" }}><span style={{ color: "#22C55E" }}>● </span>Impressions</span>
           </div>
-          <LineChart series={series} height={280} />
+          <SpendImpressionsChart series={series} height={280} />
         </Card>
         <Card pad={20}>
           <SectionTitle>Répartition par objectif</SectionTitle>
@@ -128,7 +128,7 @@ export function OverviewPage({ onGoToSettings }: { onGoToSettings: () => void })
             <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontSize: 13 }}>Aucune donnée de campagne.</div>
           ) : (
             <>
-              <DonutChart data={objectives} size={180} />
+              <ObjectiveDonut data={objectives} size={180} />
               <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 18 }}>
                 {objectives.map((o, i) => (
                   <div key={i} className="ms-legend-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12.5 }}>

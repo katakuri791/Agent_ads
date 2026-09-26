@@ -1,7 +1,12 @@
 // MetaScope bespoke SVG charts (ported from the prototype's charts.jsx).
 // Self-contained, animated, dependency-free — kept faithful to the design.
 import { useState, useEffect, useRef, useId } from "react";
+import {
+  Area, AreaChart, CartesianGrid, XAxis, YAxis,
+  Cell, Pie, PieChart as RechartsPieChart,
+} from "recharts";
 import { fmtMoney, fmtNum } from "../../lib/format";
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "../ui/chart";
 
 // Age × gender datum used by GroupedBar (real data from campaign/account insights).
 export interface AgeGender {
@@ -257,6 +262,94 @@ export function FollowersChart({ data, height = 220 }: { data: number[]; height?
         <span>{fmtNum(data[0])}</span>
         <span style={{ color: "#22C55E" }}>+{fmtNum(data[data.length - 1] - data[0])}</span>
         <span>{fmtNum(data[data.length - 1])}</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── SpendImpressionsChart (Recharts area, dual axis) ────────────
+const spendImprConfig = {
+  spend: { label: "Dépenses", color: "var(--accent)" },
+  impressions: { label: "Impressions", color: "#22C55E" },
+} satisfies ChartConfig;
+
+export function SpendImpressionsChart({ series, height = 280 }: { series: LinePoint[]; height?: number }) {
+  if (!series || series.length === 0) {
+    return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-dim)", fontSize: 13 }}>Aucune donnée pour cette période.</div>;
+  }
+  const rows = series.map((s) => ({
+    date: s.date.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" }),
+    spend: s.spend,
+    impressions: s.impressions,
+  }));
+  return (
+    <ChartContainer config={spendImprConfig} style={{ height, width: "100%" }}>
+      <AreaChart data={rows} margin={{ top: 5, right: 8, left: 8, bottom: 0 }}>
+        <defs>
+          <linearGradient id="siSpend" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--color-spend)" stopOpacity={0.25} />
+            <stop offset="100%" stopColor="var(--color-spend)" stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="siImpr" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--color-impressions)" stopOpacity={0.18} />
+            <stop offset="100%" stopColor="var(--color-impressions)" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="4 8" stroke="var(--bd)" vertical={false} />
+        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "var(--tx-dim)" }} tickMargin={10} />
+        <YAxis yAxisId="spend" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "var(--tx-dim)" }} tickFormatter={(v) => fmtMoney(v)} width={52} />
+        <YAxis yAxisId="impr" orientation="right" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "var(--tx-dim)" }} tickFormatter={(v) => fmtNum(v)} width={52} />
+        <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
+        <Area yAxisId="impr" dataKey="impressions" type="monotone" stroke="var(--color-impressions)" strokeWidth={2} fill="url(#siImpr)" />
+        <Area yAxisId="spend" dataKey="spend" type="monotone" stroke="var(--color-spend)" strokeWidth={2.4} fill="url(#siSpend)" />
+      </AreaChart>
+    </ChartContainer>
+  );
+}
+
+// ─── ObjectiveDonut (Recharts pie, center total) ─────────────────
+export function ObjectiveDonut({ data, size = 200 }: { data: DonutDatum[]; size?: number }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  const [active, setActive] = useState<string | null>(null);
+  const config = data.reduce((acc, d) => {
+    acc[d.label] = { label: d.label, color: d.color };
+    return acc;
+  }, {} as ChartConfig);
+  const rows = data.map((d) => ({ name: d.label, value: d.value, fill: d.color }));
+  const activeSeg = active ? data.find((d) => d.label === active) : null;
+  return (
+    <div style={{ position: "relative", width: size, height: size, margin: "0 auto" }}>
+      <ChartContainer config={config} style={{ width: size, height: size, aspectRatio: "auto" }}>
+        <RechartsPieChart>
+          <ChartTooltip content={<ChartTooltipContent hideLabel />} />
+          <Pie
+            data={rows}
+            dataKey="value"
+            nameKey="name"
+            innerRadius={size * 0.32}
+            outerRadius={size * 0.46}
+            paddingAngle={2}
+            cornerRadius={6}
+            onMouseLeave={() => setActive(null)}
+          >
+            {rows.map((r) => (
+              <Cell
+                key={r.name}
+                fill={r.fill}
+                stroke="var(--surf-card)"
+                strokeWidth={1.5}
+                style={{ cursor: "pointer" }}
+                onMouseEnter={() => setActive(r.name)}
+              />
+            ))}
+          </Pie>
+        </RechartsPieChart>
+      </ChartContainer>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+        <div style={{ fontFamily: "JetBrains Mono, monospace", fontWeight: 700, fontSize: 24, letterSpacing: "-.02em", fontVariantNumeric: "tabular-nums", color: "var(--tx)" }}>
+          {activeSeg ? Math.round((activeSeg.value / (total || 1)) * 100) + "%" : fmtNum(total)}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--tx-dim)", letterSpacing: ".04em", marginTop: 2 }}>{activeSeg ? activeSeg.label : "TOTAL"}</div>
       </div>
     </div>
   );
